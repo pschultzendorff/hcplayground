@@ -6,6 +6,11 @@ Brown, D.A. and Zingg, D.W. (2016) ‘Efficient numerical differentiation of
 implicitly-defined curves for sparse systems’, Journal of Computational and Applied
 Mathematics, 304, pp. 138–159. Available at: https://doi.org/10.1016/j.cam.2016.03.002.
 
+TODO
+- Log scale toggle resets automatically when the f polynomial is changed, but this is
+not displayed in the UI.
+- Can the same error occur for the y-limits toggle?
+
 """
 
 import matplotlib.pyplot as plt
@@ -28,8 +33,10 @@ def interactive_homotopy_curvature_plot():
     a0_init = -20.0  # x^0 coefficient
 
     # Create figure and subplots
-    fig, (ax1, ax2, ax3) = plt.subplots(3, figsize=(12, 8))
-    plt.subplots_adjust(bottom=0.3, right=0.8)  # Make room for sliders and checkboxes.
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(
+        4, figsize=(13, 10), gridspec_kw={"hspace": 0.4}
+    )
+    plt.subplots_adjust(bottom=0.25, right=0.8)  # Make room for sliders and checkboxes.
 
     class HomotopyFunctions:
         def __init__(self, a4, a3, a2, a1, a0):
@@ -181,26 +188,35 @@ def interactive_homotopy_curvature_plot():
         "ax1": {},
         "ax2": {},
         "ax3": {},
+        "ax4": {},
     }
     visibility = {
         "ax1": {},
         "ax2": {},
         "ax3": {},
+        "ax4": {},
     }
 
     # Keys for all plots
     keys_ax1 = [
-        "x tangents",
-        "λ tangents",
-        "λ",
-        "sgn(Δ)",
-        "x",
-        "ẋ",
-        "ẍ",
-        "ẍ_approx",
+        r"$x$ tangents",
+        r"$\lambda$ tangents",
+        r"$\lambda$",
+        r"$sgn(\Delta)$",
+        r"$x$",
+        r"$\dot{x}$",
+        r"$\ddot{x}$",
+        r"$\ddot{x}_{approx}$",
     ]
-    keys_ax2 = ["g(x)-f(x)", "∂_x h", "∂_x^2 h"]
-    keys_ax3 = ["x", "ẋ/λ̇", "∂_λ x", "∂_λ^2 x", "∂_λ^2 x_approx"]
+    keys_ax2 = [r"$g(x)-f(x)$", r"$\partial_x h$", r"$\partial_x^2 h$"]
+    keys_ax3 = [r"$g(x)-f(x)$", r"$\partial_x h$", r"$\partial_x^2 h$"]
+    keys_ax4 = [
+        r"$x$",
+        r"$\dot{x}/\dot{\lambda}$",
+        r"$\partial_{\lambda,appr} x$",
+        r"$\partial_{\lambda}^2 x$",
+        r"$\partial_{\lambda,appr}^2 x$",
+    ]
 
     def recalc_and_plot(val):
         nonlocal plot_objects, visibility
@@ -218,6 +234,7 @@ def interactive_homotopy_curvature_plot():
         ax1.clear()
         ax2.clear()
         ax3.clear()
+        ax4.clear()
 
         # Recalculate with new coefficients and plot.
         try:
@@ -226,7 +243,8 @@ def interactive_homotopy_curvature_plot():
             # solutions.
             # This could be sped up at the cost of lower accuracy by using the previous
             # solution for the next 10 iterations.
-            xx = np.array([x0 := hfunc.solve_h_for_beta(b, x0=hfunc.x0) for b in betas])
+            x0 = hfunc.x0
+            xx = np.array([x0 := hfunc.solve_h_for_beta(b, x0=x0) for b in betas])
 
             ss = hfunc.map_to_arclength(xx, betas)
             tangent = hfunc.x_dot(xx, betas)
@@ -235,7 +253,7 @@ def interactive_homotopy_curvature_plot():
 
             # First subplot. Homotopy curvature and tangent with respect to
             # s-parameterization.
-            plot_objects["ax1"]["x tangents"] = ax1.quiver(
+            plot_objects["ax1"][keys_ax1[0]] = ax1.quiver(
                 ss[:-10:10],
                 xx[:-10:10],
                 ss[10::10] - ss[:-10:10],
@@ -246,10 +264,10 @@ def interactive_homotopy_curvature_plot():
                 color="k",
                 alpha=0.7,
                 width=0.005,
-                label=r"$x$ tangents",
-                visible=visibility["ax1"]["x tangents"],
+                label=keys_ax1[0],
+                visible=visibility["ax1"][keys_ax1[0]],
             )
-            plot_objects["ax1"]["λ tangents"] = ax1.quiver(
+            plot_objects["ax1"][keys_ax1[1]] = ax1.quiver(
                 ss[:-10:10],
                 betas[:-10:10],
                 ss[10::10] - ss[:-10:10],
@@ -261,128 +279,130 @@ def interactive_homotopy_curvature_plot():
                 color="y",
                 alpha=0.7,
                 width=0.005,
-                label=r"$\lambda$ tangents",
-                visible=visibility["ax1"]["λ tangents"],
+                label=keys_ax1[1],
+                visible=visibility["ax1"][keys_ax1[1]],
             )
-            plot_objects["ax1"]["λ"] = ax1.plot(
+            plot_objects["ax1"][keys_ax1[2]] = ax1.plot(
                 ss,
                 betas,
                 "y-",
                 lw=1.5,
-                label=r"$\lambda$",
-                visible=visibility["ax1"]["λ"],
+                label=keys_ax1[2],
+                visible=visibility["ax1"][keys_ax1[2]],
             )[0]
-            plot_objects["ax1"]["sgn(Δ)"] = ax1.plot(
+            plot_objects["ax1"][keys_ax1[3]] = ax1.plot(
                 ss,
                 np.sign(hfunc.disc(betas)),
                 "y:",
                 lw=1.5,
-                label=r"$sgn(\Delta)$",
-                visible=visibility["ax1"]["sgn(Δ)"],
+                label=keys_ax1[3],
+                visible=visibility["ax1"][keys_ax1[3]],
             )[0]
-            plot_objects["ax1"]["x"] = ax1.plot(
+            plot_objects["ax1"][keys_ax1[4]] = ax1.plot(
                 ss,
                 xx,
                 "k-",
                 lw=1.5,
-                label=r"$x$",
-                visible=visibility["ax1"]["x"],
+                label=keys_ax1[4],
+                visible=visibility["ax1"][keys_ax1[4]],
             )[0]
-            plot_objects["ax1"]["ẋ"] = ax1.plot(
+            plot_objects["ax1"][keys_ax1[5]] = ax1.plot(
                 ss,
                 tangent,
                 "r-.",
                 lw=1.5,
-                label=r"$\dot{x}$",
-                visible=visibility["ax1"]["ẋ"],
+                label=keys_ax1[5],
+                visible=visibility["ax1"][keys_ax1[5]],
             )[0]
-            plot_objects["ax1"]["ẍ"] = ax1.plot(
+            plot_objects["ax1"][keys_ax1[6]] = ax1.plot(
                 ss,
                 hfunc.c_ddot(xx, betas)[0],
                 "r--",
                 lw=1.5,
-                label=r"$\ddot{x}$",
-                visible=visibility["ax1"]["ẍ"],
+                label=keys_ax1[6],
+                visible=visibility["ax1"][keys_ax1[6]],
             )[0]
-            plot_objects["ax1"]["ẍ_approx"] = ax1.plot(
+            plot_objects["ax1"][keys_ax1[7]] = ax1.plot(
                 ss[1:-1],
                 hfunc.homotopy_curvature_approx(xx, ss[1:] - ss[:-1]),
                 "r:",
                 lw=1.5,
-                label=r"$\ddot{x}_{approx}$",
-                visible=visibility["ax1"]["ẍ_approx"],
+                label=keys_ax1[7],
+                visible=visibility["ax1"][keys_ax1[7]],
             )[0]
 
-            # Second subplot. Homotopy function and its derivatives.
-            plot_objects["ax2"]["g(x)-f(x)"] = ax2.plot(
-                ss,
-                hfunc.g(xx) - hfunc.f(xx),
-                "g-.",
-                lw=1.5,
-                label=r"$g(x) - f(x)$",
-                visible=visibility["ax2"]["g(x)-f(x)"],
-            )[0]
-            plot_objects["ax2"]["∂_x h"] = ax2.plot(
-                ss,
-                hfunc.h_prime(xx, betas),
-                "b-.",
-                lw=1.5,
-                label=r"$\partial_{x} h$",
-                visible=visibility["ax2"]["∂_x h"],
-            )[0]
-            plot_objects["ax2"]["∂_x^2 h"] = ax2.plot(
-                ss,
-                hfunc.h_dprime(xx, betas),
-                "b--",
-                lw=1.5,
-                label=r"$\partial_{x}^2 h$",
-                visible=visibility["ax2"]["∂_x^2 h"],
-            )[0]
+            # Second and third subplot. Homotopy function and its derivatives. Once with
+            # respect to s-parameterization and once with respect to λ-parameterization.
+            for ax, ax_key, x_values in zip([ax2, ax3], ["ax2", "ax3"], [ss, betas]):
+                plot_objects[ax_key][keys_ax2[0]] = ax.plot(
+                    x_values,
+                    hfunc.g(xx) - hfunc.f(xx),
+                    "g-.",
+                    lw=1.5,
+                    label=keys_ax2[0],
+                    visible=visibility[ax_key][keys_ax2[0]],
+                )[0]
+                plot_objects[ax_key][keys_ax2[1]] = ax.plot(
+                    x_values,
+                    hfunc.h_prime(xx, betas),
+                    "b-.",
+                    lw=1.5,
+                    label=keys_ax2[1],
+                    visible=visibility[ax_key][keys_ax2[1]],
+                )[0]
+                plot_objects[ax_key][keys_ax2[2]] = ax.plot(
+                    x_values,
+                    hfunc.h_dprime(xx, betas),
+                    "b--",
+                    lw=1.5,
+                    label=keys_ax2[2],
+                    visible=visibility[ax_key][keys_ax2[2]],
+                )[0]
 
-            # Third subplot. Tangent and curvature with respect to λ-parametrization.
-            plot_objects["ax3"]["x"] = ax3.plot(
+            # Fourth subplot. Tangent and curvature with respect to λ-parametrization.
+            plot_objects["ax4"][keys_ax4[0]] = ax4.plot(
                 betas,
                 xx,
                 "k-",
                 lw=1.5,
-                label=r"$x$",
-                visible=visibility["ax3"]["x"],
+                label=keys_ax4[0],
+                visible=visibility["ax4"][keys_ax4[0]],
             )[0]
-            plot_objects["ax3"]["ẋ/λ̇"] = ax3.plot(
+            plot_objects["ax4"][keys_ax4[1]] = ax4.plot(
                 betas,
                 -1 * hfunc.z(xx, betas),
                 "r-.",
                 lw=1.5,
-                label=r"$\dot{x} / \dot{\lambda}$",
-                visible=visibility["ax3"]["ẋ/λ̇"],
+                label=keys_ax4[1],
+                visible=visibility["ax4"][keys_ax4[1]],
             )[0]
-            plot_objects["ax3"]["∂_λ x"] = ax3.plot(
+            plot_objects["ax4"][keys_ax4[2]] = ax4.plot(
                 betas[1:],
                 hfunc.homotopy_tangent_approx(xx, betas[1:] - betas[:-1]),
                 "r.",
                 lw=1.5,
-                label=r"$\partial_{lambda, approx} x$",
-                visible=visibility["ax3"]["∂_λ x"],
+                label=keys_ax4[2],
+                visible=visibility["ax4"][keys_ax4[2]],
             )[0]
             x_dot = hfunc.x_dot(xx, betas)
             beta_dot = hfunc.beta_dot(xx, betas)
             x_ddot, beta_ddot = hfunc.c_ddot(xx, betas)
             x_prime_prime = (x_ddot * beta_dot - x_dot * beta_ddot) / (beta_dot**3)
-            plot_objects["ax3"]["∂_λ^2 x"] = ax3.plot(
+            plot_objects["ax4"][keys_ax4[3]] = ax4.plot(
                 betas,
                 x_prime_prime,
                 "r--",
                 lw=1.5,
-                label=r"$\partial_{\lambda}^2 x$",
-                visible=visibility["ax3"]["∂_λ^2 x"],
+                label=keys_ax4[3],
+                visible=visibility["ax4"][keys_ax4[3]],
             )[0]
-            plot_objects["ax3"]["∂_λ^2 x_approx"] = ax3.plot(
+            plot_objects["ax4"][keys_ax4[4]] = ax4.plot(
                 betas[1:-1],
                 hfunc.homotopy_curvature_approx(xx, betas[1:] - betas[:-1]),
                 "r:",
                 lw=1.5,
-                label=r"$\partial_{lambda, approx}^2 x$",
-                visible=visibility["ax3"]["∂_λ^2 x_approx"],
+                label=keys_ax4[4],
+                visible=visibility["ax4"][keys_ax4[4]],
             )[0]
 
         except Exception as e:
@@ -408,26 +428,44 @@ def interactive_homotopy_curvature_plot():
 
         # Adding labels and legends to the plots.
 
-        # Display polynomial equation in the title.
-        eq = f"$f(x) = {a4:.2f}x^4"
+        # Display polynomial equations in the title.
+        eq_f = "$f(x) = "
+        if a4 >= 0:
+            eq_f += f"{a4:.2f}x^4"
+        else:
+            eq_f += f"-{abs(a4):.2f}x^4"
         if a3 >= 0:
-            eq += f" + {a3:.2f}x^3"
+            eq_f += f" + {a3:.2f}x^3"
         else:
-            eq += f" - {abs(a3):.2f}x^3"
+            eq_f += f" - {abs(a3):.2f}x^3"
         if a2 >= 0:
-            eq += f" + {a2:.2f}x^2"
+            eq_f += f" + {a2:.2f}x^2"
         else:
-            eq += f" - {abs(a2):.2f}x^2"
+            eq_f += f" - {abs(a2):.2f}x^2"
         if a1 >= 0:
-            eq += f" + {a1:.2f}x"
+            eq_f += f" + {a1:.2f}x"
         else:
-            eq += f" - {abs(a1):.2f}x"
+            eq_f += f" - {abs(a1):.2f}x"
         if a0 >= 0:
-            eq += f" + {a0:.2f}$"
+            eq_f += f" + {a0:.2f}$"
         else:
-            eq += f" - {abs(a0):.2f}$"
+            eq_f += f" - {abs(a0):.2f}$"
 
-        ax1.set_title(eq + "\nHomotopy Curvature")
+        eq_g = "\n$g(x) = "
+        if hfunc.b2 >= 0:
+            eq_g += f"{hfunc.b2:.2f}x^2"
+        else:
+            eq_g += f"-{abs(hfunc.b2):.2f}x^2"
+        if hfunc.b1 >= 0:
+            eq_g += f" + {hfunc.b1:.2f}x"
+        else:
+            eq_g += f" - {abs(hfunc.b1):.2f}x"
+        if hfunc.b0 >= 0:
+            eq_g += f" + {hfunc.b0:.2f}$"
+        else:
+            eq_g += f" - {abs(hfunc.b0):.2f}$"
+
+        ax1.set_title(eq_f + eq_g + "\nHomotopy Curvature")
 
         set_legends()
 
@@ -443,6 +481,10 @@ def interactive_homotopy_curvature_plot():
         ax3.set_xlabel(r"$\lambda$")
         ax3.set_xlim(1, 0)
         ax3.legend()
+
+        ax4.set_xlabel(r"$\lambda$")
+        ax4.set_xlim(1, 0)
+        ax4.legend()
 
         fig.canvas.draw_idle()
 
@@ -486,7 +528,8 @@ def interactive_homotopy_curvature_plot():
     # Create checkbox axes on the right side.
     checkbox_ax1 = plt.axes((0.82, 0.70, 0.07, 0.20))
     checkbox_ax2 = plt.axes((0.82, 0.55, 0.07, 0.10))
-    checkbox_ax3 = plt.axes((0.82, 0.30, 0.07, 0.15))
+    checkbox_ax3 = plt.axes((0.82, 0.40, 0.07, 0.10))
+    checkbox_ax4 = plt.axes((0.82, 0.20, 0.07, 0.15))
 
     # Create checkbox widgets.
     for label in keys_ax1:
@@ -495,32 +538,43 @@ def interactive_homotopy_curvature_plot():
         visibility["ax2"][label] = True
     for label in keys_ax3:
         visibility["ax3"][label] = True
+    for label in keys_ax4:
+        visibility["ax4"][label] = True
 
     check1 = CheckButtons(checkbox_ax1, keys_ax1, [True] * len(keys_ax1))
     check2 = CheckButtons(checkbox_ax2, keys_ax2, [True] * len(keys_ax2))
     check3 = CheckButtons(checkbox_ax3, keys_ax3, [True] * len(keys_ax3))
+    check4 = CheckButtons(checkbox_ax4, keys_ax4, [True] * len(keys_ax4))
 
     check1.on_clicked(lambda label: toggle_visibility(label, 1))
     check2.on_clicked(lambda label: toggle_visibility(label, 2))
     check3.on_clicked(lambda label: toggle_visibility(label, 3))
+    check4.on_clicked(lambda label: toggle_visibility(label, 4))
 
     # Add checkboxes to toggle y-axis limits and scale
     ylim_ax1 = plt.axes((0.92, 0.70, 0.07, 0.10))
     ylim_ax2 = plt.axes((0.92, 0.55, 0.07, 0.05))
-    ylim_ax3 = plt.axes((0.92, 0.30, 0.07, 0.10))
+    ylim_ax3 = plt.axes((0.92, 0.40, 0.07, 0.05))
+    ylim_ax4 = plt.axes((0.92, 0.20, 0.07, 0.10))
 
     # Create checkbox widgets for y-limits and scale
     ylim_options = ["Auto y-limits", "Log scale"]
     ylim_check1 = CheckButtons(ylim_ax1, ylim_options, [True, False])
     ylim_check2 = CheckButtons(ylim_ax2, ylim_options, [True, False])
     ylim_check3 = CheckButtons(ylim_ax3, ylim_options, [True, False])
+    ylim_check4 = CheckButtons(ylim_ax4, ylim_options, [True, False])
 
     # Default y-limits for each axis when not auto
-    default_ylims = {"ax1": (-10, 10), "ax2": (-10, 10), "ax3": (-10, 10)}
+    default_ylims = {
+        "ax1": (-10, 10),
+        "ax2": (-10, 10),
+        "ax3": (-10, 10),
+        "ax4": (-10, 10),
+    }
 
     # Function to handle y-limit and scale toggles
     def toggle_ylim_scale(label, ax_num):
-        axes = [ax1, ax2, ax3]
+        axes = [ax1, ax2, ax3, ax4]
         ax = axes[ax_num - 1]
 
         if label == "Auto y-limits":
@@ -540,18 +594,21 @@ def interactive_homotopy_curvature_plot():
                 try:
                     ax.set_yscale("symlog")
                 except ValueError:
-                    # If log scale fails, keep it unchecked
-                    ylim_check = [ylim_check1, ylim_check2, ylim_check3][ax_num - 1]
-                    ylim_check.set_active(1)  # Toggle log scale checkbox
+                    # If log scale fails, keep it unchecked.
+                    ylim_check = [ylim_check1, ylim_check2, ylim_check3, ylim_check4][
+                        ax_num - 1
+                    ]
+                    ylim_check.set_active(1)  # Toggle log scale checkbox.
             else:
                 ax.set_yscale("linear")
 
         fig.canvas.draw_idle()
 
-    # Connect callbacks to checkboxes
+    # Connect callbacks to checkboxes.
     ylim_check1.on_clicked(lambda label: toggle_ylim_scale(label, 1))
     ylim_check2.on_clicked(lambda label: toggle_ylim_scale(label, 2))
     ylim_check3.on_clicked(lambda label: toggle_ylim_scale(label, 3))
+    ylim_check4.on_clicked(lambda label: toggle_ylim_scale(label, 4))
 
     # Add a reset button to restore initial coefficients.
     def reset(event):
