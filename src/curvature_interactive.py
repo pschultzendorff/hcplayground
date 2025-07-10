@@ -10,7 +10,7 @@ Mathematics, 304, pp. 138–159. Available at: https://doi.org/10.1016/j.cam.201
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.widgets import Slider
+from matplotlib.widgets import CheckButtons, Slider
 from scipy.optimize import root
 
 INTERESTING_POLYNOMIALS = [
@@ -20,7 +20,7 @@ INTERESTING_POLYNOMIALS = [
 
 
 def interactive_homotopy_curvature_plot():
-    # Initial coefficient values
+    # Initial coefficient values.
     a4_init = 0.0  # x^4 coefficient
     a3_init = 0.0  # x^3 coefficient
     a2_init = 1.0  # x^2 coefficient
@@ -29,7 +29,7 @@ def interactive_homotopy_curvature_plot():
 
     # Create figure and subplots
     fig, (ax1, ax2, ax3) = plt.subplots(3, figsize=(12, 8))
-    plt.subplots_adjust(bottom=0.35)  # Make room for sliders
+    plt.subplots_adjust(bottom=0.3, right=0.8)  # Make room for sliders and checkboxes.
 
     class HomotopyFunctions:
         def __init__(self, a4, a3, a2, a1, a0):
@@ -43,6 +43,8 @@ def interactive_homotopy_curvature_plot():
             self.b2 = 1.0
             self.b1 = 0.0
             self.b0 = -20.0
+            # Initial guess for the root-finding algorithm.
+            self.x0 = -3.0
 
         def f(self, x):
             return (
@@ -52,7 +54,7 @@ def interactive_homotopy_curvature_plot():
         def f_prime(self, x):
             return 4 * self.a4 * x**3 + 3 * self.a3 * x**2 + 2 * self.a2 * x + self.a1
 
-        def f_double_prime(self, x):
+        def f_dprime(self, x):
             return 12 * self.a4 * x**2 + 6 * self.a3 * x + 2 * self.a2
 
         def g(self, x):
@@ -61,7 +63,7 @@ def interactive_homotopy_curvature_plot():
         def g_prime(self, x):
             return 2 * self.b2 * x + self.b1
 
-        def g_double_prime(self, x):
+        def g_dprime(self, x):
             return 2 * self.b2
 
         def h(self, x, beta):
@@ -78,8 +80,8 @@ def interactive_homotopy_curvature_plot():
         def h_prime(self, x, beta):
             return beta * self.g_prime(x) + (1 - beta) * self.f_prime(x)
 
-        def h_double_prime(self, x, beta):
-            return beta * self.g_double_prime(x) + (1 - beta) * self.f_double_prime(x)
+        def h_dprime(self, x, beta):
+            return beta * self.g_dprime(x) + (1 - beta) * self.f_dprime(x)
 
         def hessian_h(self, x, beta):
             def hessian(v1, v2):
@@ -89,7 +91,7 @@ def interactive_homotopy_curvature_plot():
                 assert v2.shape[-1] == 2, (
                     "Input vector v2 must have ``shape=(..., 2)``."
                 )
-                h_xx = self.h_double_prime(x, beta)
+                h_xx = self.h_dprime(x, beta)
                 h_xbeta = self.g_prime(x) - self.f_prime(x)
                 h_betabeta = np.zeros_like(h_xx)
                 hessian_mat = np.stack(
@@ -117,7 +119,7 @@ def interactive_homotopy_curvature_plot():
         def x_dot(self, x, beta):
             return -1 * self.beta_dot(x, beta) * self.z(x, beta)
 
-        def c_dot_dot(self, x, beta):
+        def c_ddot(self, x, beta):
             assert x.shape[-1] == 1, "Input x must have shape (..., 1)."
             assert beta.shape[-1] == 1, "Input beta must have shape (..., 1)."
             c_dot = np.concatenate(
@@ -129,11 +131,11 @@ def interactive_homotopy_curvature_plot():
             z_2 = -w_2 / self.h_prime(x, beta)
 
             z_value = self.z(x, beta)
-            beta_dot_dot = z_2 * z_value / (z_value**2 + 1)
+            beta_ddot = z_2 * z_value / (z_value**2 + 1)
 
-            x_dot_dot = z_2 - beta_dot_dot * z_value
+            x_ddot = z_2 - beta_ddot * z_value
 
-            return x_dot_dot, beta_dot_dot
+            return x_ddot, beta_ddot
 
         def homotopy_tangent_approx(self, xx, hh):
             tangent = (xx[1:] - xx[:-1]) / hh
@@ -149,7 +151,7 @@ def interactive_homotopy_curvature_plot():
             dss = (betas[:-1] - betas[1:]) / hh[:-1]
             return np.insert(np.cumsum(dss), 0, 0)[..., None]
 
-        def solve_h_for_beta(self, beta, x0=0):
+        def solve_h_for_beta(self, beta, x0=0.0):
             if np.isscalar(beta):
 
                 def h_for_fixed_beta(x):
@@ -170,19 +172,46 @@ def interactive_homotopy_curvature_plot():
             self.a1 = a1
             self.a0 = a0
 
-    # Create the homotopy function object with initial coefficients
+    # Create the homotopy function object with initial coefficients.
     hfunc = HomotopyFunctions(a4_init, a3_init, a2_init, a1_init, a0_init)
     betas = np.linspace(0, 1, 200)[::-1][..., None]
 
-    def update(val):
-        # Get current slider values
+    # Objects to store plot objects and visibility state.
+    plot_objects = {
+        "ax1": {},
+        "ax2": {},
+        "ax3": {},
+    }
+    visibility = {
+        "ax1": {},
+        "ax2": {},
+        "ax3": {},
+    }
+
+    # Keys for all plots
+    keys_ax1 = [
+        "x tangents",
+        "λ tangents",
+        "λ",
+        "sgn(Δ)",
+        "x",
+        "ẋ",
+        "ẍ",
+        "ẍ_approx",
+    ]
+    keys_ax2 = ["g(x)-f(x)", "∂_x h", "∂_x^2 h"]
+    keys_ax3 = ["x", "ẋ/λ̇", "∂_λ x", "∂_λ^2 x", "∂_λ^2 x_approx"]
+
+    def recalc_and_plot(val):
+        nonlocal plot_objects, visibility
+        # Get current slider values.
         a4 = a4_slider.val
         a3 = a3_slider.val
         a2 = a2_slider.val
         a1 = a1_slider.val
         a0 = a0_slider.val
 
-        # Update coefficients in the homotopy functions
+        # Update coefficients in the homotopy functions.
         hfunc.update_coefficients(a4, a3, a2, a1, a0)
 
         # Clear the axes
@@ -190,165 +219,235 @@ def interactive_homotopy_curvature_plot():
         ax2.clear()
         ax3.clear()
 
-        # Recalculate with new coefficients
+        # Recalculate with new coefficients and plot.
         try:
             # Solve for x values using the homotopy function. Initial guess is previous
             # solution to ensure a continuous curve in the case of multiple real
             # solutions.
             # This could be sped up at the cost of lower accuracy by using the previous
             # solution for the next 10 iterations.
-            x0 = -3
-            xx = np.array([x0 := hfunc.solve_h_for_beta(b, x0=x0) for b in betas])
+            xx = np.array([x0 := hfunc.solve_h_for_beta(b, x0=hfunc.x0) for b in betas])
 
             ss = hfunc.map_to_arclength(xx, betas)
             tangent = hfunc.x_dot(xx, betas)
 
-            # Plotting code
-            # ax1.quiver(
-            #     ss[:-10:10],
-            #     xx[:-10:10],
-            #     ss[10::10] - ss[:-10:10],
-            #     tangent[:-10:10].squeeze() * (ss[10::10] - ss[:-10:10]).squeeze(),
-            #     angles="xy",
-            #     scale_units="xy",
-            #     scale=1,
-            #     color="k",
-            #     alpha=0.7,
-            #     width=0.005,
-            #     label=r"$x$ tangents",
-            # )
-            # ax1.quiver(
-            #     ss[:-10:10],
-            #     betas[:-10:10],
-            #     ss[10::10] - ss[:-10:10],
-            #     hfunc.beta_dot(xx, betas)[:-10:10].squeeze()
-            #     * (ss[10::10] - ss[:-10:10]).squeeze(),
-            #     angles="xy",
-            #     scale_units="xy",
-            #     scale=1,
-            #     color="y",
-            #     alpha=0.7,
-            #     width=0.005,
-            #     label=r"$\lambda$ tangents",
-            # )
-            ax1.plot(ss, betas, "y-", lw=1.5, label=r"$\lambda$")
-            # ax1.plot(
-            #     ss, np.sign(hfunc.disc(betas)), "y:", lw=1.5, label=r"$sgn(\Delta)$"
-            # )
-            ax1.plot(ss, xx, "k-", lw=1.5, label=r"$x$")
-            ax1.plot(ss, tangent, "r-.", lw=1.5, label=r"$\dot{x}$")
-            ax1.plot(
+            # Calculate and plot all plots and store them in plot_objects.
+
+            # First subplot. Homotopy curvature and tangent with respect to
+            # s-parameterization.
+            plot_objects["ax1"]["x tangents"] = ax1.quiver(
+                ss[:-10:10],
+                xx[:-10:10],
+                ss[10::10] - ss[:-10:10],
+                tangent[:-10:10].squeeze() * (ss[10::10] - ss[:-10:10]).squeeze(),
+                angles="xy",
+                scale_units="xy",
+                scale=1,
+                color="k",
+                alpha=0.7,
+                width=0.005,
+                label=r"$x$ tangents",
+                visible=visibility["ax1"]["x tangents"],
+            )
+            plot_objects["ax1"]["λ tangents"] = ax1.quiver(
+                ss[:-10:10],
+                betas[:-10:10],
+                ss[10::10] - ss[:-10:10],
+                hfunc.beta_dot(xx, betas)[:-10:10].squeeze()
+                * (ss[10::10] - ss[:-10:10]).squeeze(),
+                angles="xy",
+                scale_units="xy",
+                scale=1,
+                color="y",
+                alpha=0.7,
+                width=0.005,
+                label=r"$\lambda$ tangents",
+                visible=visibility["ax1"]["λ tangents"],
+            )
+            plot_objects["ax1"]["λ"] = ax1.plot(
                 ss,
-                hfunc.c_dot_dot(xx, betas)[0],
+                betas,
+                "y-",
+                lw=1.5,
+                label=r"$\lambda$",
+                visible=visibility["ax1"]["λ"],
+            )[0]
+            plot_objects["ax1"]["sgn(Δ)"] = ax1.plot(
+                ss,
+                np.sign(hfunc.disc(betas)),
+                "y:",
+                lw=1.5,
+                label=r"$sgn(\Delta)$",
+                visible=visibility["ax1"]["sgn(Δ)"],
+            )[0]
+            plot_objects["ax1"]["x"] = ax1.plot(
+                ss,
+                xx,
+                "k-",
+                lw=1.5,
+                label=r"$x$",
+                visible=visibility["ax1"]["x"],
+            )[0]
+            plot_objects["ax1"]["ẋ"] = ax1.plot(
+                ss,
+                tangent,
+                "r-.",
+                lw=1.5,
+                label=r"$\dot{x}$",
+                visible=visibility["ax1"]["ẋ"],
+            )[0]
+            plot_objects["ax1"]["ẍ"] = ax1.plot(
+                ss,
+                hfunc.c_ddot(xx, betas)[0],
                 "r--",
                 lw=1.5,
                 label=r"$\ddot{x}$",
-            )
-            ax1.plot(
+                visible=visibility["ax1"]["ẍ"],
+            )[0]
+            plot_objects["ax1"]["ẍ_approx"] = ax1.plot(
                 ss[1:-1],
                 hfunc.homotopy_curvature_approx(xx, ss[1:] - ss[:-1]),
                 "r:",
                 lw=1.5,
                 label=r"$\ddot{x}_{approx}$",
-            )
+                visible=visibility["ax1"]["ẍ_approx"],
+            )[0]
 
-            # Display polynomial equation in the title
-            eq = f"$f(x) = {a4:.2f}x^4"
-            if a3 >= 0:
-                eq += f" + {a3:.2f}x^3"
-            else:
-                eq += f" - {abs(a3):.2f}x^3"
-            if a2 >= 0:
-                eq += f" + {a2:.2f}x^2"
-            else:
-                eq += f" - {abs(a2):.2f}x^2"
-            if a1 >= 0:
-                eq += f" + {a1:.2f}x"
-            else:
-                eq += f" - {abs(a1):.2f}x"
-            if a0 >= 0:
-                eq += f" + {a0:.2f}$"
-            else:
-                eq += f" - {abs(a0):.2f}$"
-
-            ax1.set_title(eq + "\nHomotopy Curvature")
-            ax1.set_xlabel(r"$s$")
-            ax1.legend()
-
-            ax2.plot(
-                ss, hfunc.g(xx) - hfunc.f(xx), "g-.", lw=1.5, label=r"$g(x) - f(x)$"
-            )
-            ax2.plot(
+            # Second subplot. Homotopy function and its derivatives.
+            plot_objects["ax2"]["g(x)-f(x)"] = ax2.plot(
+                ss,
+                hfunc.g(xx) - hfunc.f(xx),
+                "g-.",
+                lw=1.5,
+                label=r"$g(x) - f(x)$",
+                visible=visibility["ax2"]["g(x)-f(x)"],
+            )[0]
+            plot_objects["ax2"]["∂_x h"] = ax2.plot(
                 ss,
                 hfunc.h_prime(xx, betas),
                 "b-.",
                 lw=1.5,
                 label=r"$\partial_{x} h$",
-            )
-            ax2.plot(
+                visible=visibility["ax2"]["∂_x h"],
+            )[0]
+            plot_objects["ax2"]["∂_x^2 h"] = ax2.plot(
                 ss,
-                hfunc.h_double_prime(xx, betas),
+                hfunc.h_dprime(xx, betas),
                 "b--",
                 lw=1.5,
                 label=r"$\partial_{x}^2 h$",
-            )
-            ax2.set_xlabel(r"$s$")
-            ax2.legend()
+                visible=visibility["ax2"]["∂_x^2 h"],
+            )[0]
 
-            ax3.plot(betas, xx, "k-", lw=1.5, label=r"$x$")
-            ax3.plot(
+            # Third subplot. Tangent and curvature with respect to λ-parametrization.
+            plot_objects["ax3"]["x"] = ax3.plot(
+                betas,
+                xx,
+                "k-",
+                lw=1.5,
+                label=r"$x$",
+                visible=visibility["ax3"]["x"],
+            )[0]
+            plot_objects["ax3"]["ẋ/λ̇"] = ax3.plot(
                 betas,
                 -1 * hfunc.z(xx, betas),
                 "r-.",
                 lw=1.5,
                 label=r"$\dot{x} / \dot{\lambda}$",
-            )
-            ax3.plot(
+                visible=visibility["ax3"]["ẋ/λ̇"],
+            )[0]
+            plot_objects["ax3"]["∂_λ x"] = ax3.plot(
                 betas[1:],
                 hfunc.homotopy_tangent_approx(xx, betas[1:] - betas[:-1]),
                 "r.",
                 lw=1.5,
                 label=r"$\partial_{lambda, approx} x$",
-            )
+                visible=visibility["ax3"]["∂_λ x"],
+            )[0]
             x_dot = hfunc.x_dot(xx, betas)
             beta_dot = hfunc.beta_dot(xx, betas)
-            x_dot_dot, beta_dot_dot = hfunc.c_dot_dot(xx, betas)
-            x_prime_prime = (x_dot_dot * beta_dot - x_dot * beta_dot_dot) / (
-                beta_dot**3
-            )
-            ax3.plot(
+            x_ddot, beta_ddot = hfunc.c_ddot(xx, betas)
+            x_prime_prime = (x_ddot * beta_dot - x_dot * beta_ddot) / (beta_dot**3)
+            plot_objects["ax3"]["∂_λ^2 x"] = ax3.plot(
                 betas,
                 x_prime_prime,
                 "r--",
                 lw=1.5,
                 label=r"$\partial_{\lambda}^2 x$",
-            )
-            ax3.plot(
+                visible=visibility["ax3"]["∂_λ^2 x"],
+            )[0]
+            plot_objects["ax3"]["∂_λ^2 x_approx"] = ax3.plot(
                 betas[1:-1],
                 hfunc.homotopy_curvature_approx(xx, betas[1:] - betas[:-1]),
                 "r:",
                 lw=1.5,
                 label=r"$\partial_{lambda, approx}^2 x$",
-            )
-
-            ax3.set_xlabel(r"$\lambda$")
-            ax3.set_xlim(1, 0)
-            ax3.set_ylim(-10, 10)
-            ax3.legend()
+                visible=visibility["ax3"]["∂_λ^2 x_approx"],
+            )[0]
 
         except Exception as e:
+            # If an error occurs, toggle off all plots and display the error in the
+            # first plot.
+            for ax in plot_objects.keys():
+                for label in plot_objects[ax].keys():
+                    visibility[ax][label] = False
             ax1.text(
                 0.5,
                 0.5,
                 f"Error: {str(e)}",
                 ha="center",
                 va="center",
-                transform=ax1.transAxes,
             )
+
+        # Get current slider values.
+        a4 = a4_slider.val
+        a3 = a3_slider.val
+        a2 = a2_slider.val
+        a1 = a1_slider.val
+        a0 = a0_slider.val
+
+        # Adding labels and legends to the plots.
+
+        # Display polynomial equation in the title.
+        eq = f"$f(x) = {a4:.2f}x^4"
+        if a3 >= 0:
+            eq += f" + {a3:.2f}x^3"
+        else:
+            eq += f" - {abs(a3):.2f}x^3"
+        if a2 >= 0:
+            eq += f" + {a2:.2f}x^2"
+        else:
+            eq += f" - {abs(a2):.2f}x^2"
+        if a1 >= 0:
+            eq += f" + {a1:.2f}x"
+        else:
+            eq += f" - {abs(a1):.2f}x"
+        if a0 >= 0:
+            eq += f" + {a0:.2f}$"
+        else:
+            eq += f" - {abs(a0):.2f}$"
+
+        ax1.set_title(eq + "\nHomotopy Curvature")
+
+        set_legends()
 
         fig.canvas.draw_idle()
 
-    # Create sliders
+    def set_legends():
+        ax1.set_xlabel(r"$s$")
+        ax1.legend()
+
+        ax2.set_xlabel(r"$s$")
+        ax2.legend()
+
+        ax3.set_xlabel(r"$\lambda$")
+        ax3.set_xlim(1, 0)
+        ax3.set_ylim(-10, 10)
+        ax3.legend()
+
+        fig.canvas.draw_idle()
+
+    # Create sliders.
     ax_a4 = plt.axes((0.1, 0.15, 0.35, 0.03))
     ax_a3 = plt.axes((0.55, 0.15, 0.35, 0.03))
     ax_a2 = plt.axes((0.1, 0.1, 0.35, 0.03))
@@ -361,14 +460,101 @@ def interactive_homotopy_curvature_plot():
     a1_slider = Slider(ax_a1, r"$x^1$", -20.0, 20.0, valinit=a1_init)
     a0_slider = Slider(ax_a0, r"$x^0$", -30.0, 30.0, valinit=a0_init)
 
-    # Connect update function to sliders
-    a4_slider.on_changed(update)
-    a3_slider.on_changed(update)
-    a2_slider.on_changed(update)
-    a1_slider.on_changed(update)
-    a0_slider.on_changed(update)
+    # Connect update function to sliders.
+    a4_slider.on_changed(recalc_and_plot)
+    a3_slider.on_changed(recalc_and_plot)
+    a2_slider.on_changed(recalc_and_plot)
+    a1_slider.on_changed(recalc_and_plot)
+    a0_slider.on_changed(recalc_and_plot)
 
-    # Add a reset button to restore initial coefficients
+    # Add visibility checkboxes for all plots.
+
+    def toggle_visibility(label, ax_num):
+        ax_name = f"ax{ax_num}"
+        visibility[ax_name][label] = not visibility[ax_name][label]
+        if label in plot_objects[ax_name]:
+            obj = plot_objects[ax_name][label]
+            if isinstance(obj, list):
+                for o in obj:
+                    o.set_visible(visibility[ax_name][label])
+            else:
+                obj.set_visible(visibility[ax_name][label])
+
+        set_legends()
+
+        fig.canvas.draw_idle()
+
+    # Create checkbox axes on the right side.
+    checkbox_ax1 = plt.axes((0.82, 0.70, 0.07, 0.20))
+    checkbox_ax2 = plt.axes((0.82, 0.55, 0.07, 0.10))
+    checkbox_ax3 = plt.axes((0.82, 0.30, 0.07, 0.15))
+
+    # Create checkbox widgets.
+    for label in keys_ax1:
+        visibility["ax1"][label] = True
+    for label in keys_ax2:
+        visibility["ax2"][label] = True
+    for label in keys_ax3:
+        visibility["ax3"][label] = True
+
+    check1 = CheckButtons(checkbox_ax1, keys_ax1, [True] * len(keys_ax1))
+    check2 = CheckButtons(checkbox_ax2, keys_ax2, [True] * len(keys_ax2))
+    check3 = CheckButtons(checkbox_ax3, keys_ax3, [True] * len(keys_ax3))
+
+    check1.on_clicked(lambda label: toggle_visibility(label, 1))
+    check2.on_clicked(lambda label: toggle_visibility(label, 2))
+    check3.on_clicked(lambda label: toggle_visibility(label, 3))
+
+    # Add checkboxes to toggle y-axis limits and scale
+    ylim_ax1 = plt.axes((0.92, 0.70, 0.07, 0.10))
+    ylim_ax2 = plt.axes((0.92, 0.55, 0.07, 0.05))
+    ylim_ax3 = plt.axes((0.92, 0.30, 0.07, 0.10))
+
+    # Create checkbox widgets for y-limits and scale
+    ylim_options = ["Auto y-limits", "Log scale"]
+    ylim_check1 = CheckButtons(ylim_ax1, ylim_options, [True, False])
+    ylim_check2 = CheckButtons(ylim_ax2, ylim_options, [True, False])
+    ylim_check3 = CheckButtons(ylim_ax3, ylim_options, [True, False])
+
+    # Default y-limits for each axis when not auto
+    default_ylims = {"ax1": (-10, 10), "ax2": (-10, 10), "ax3": (-10, 10)}
+
+    # Function to handle y-limit and scale toggles
+    def toggle_ylim_scale(label, ax_num):
+        axes = [ax1, ax2, ax3]
+        ax = axes[ax_num - 1]
+
+        if label == "Auto y-limits":
+            # Toggle between auto and fixed y-limits
+            if ax.get_autoscaley_on():
+                ax.set_ylim(default_ylims[f"ax{ax_num}"])
+                ax.set_autoscaley_on(False)
+            else:
+                ax.set_autoscaley_on(True)
+                ax.relim()
+                ax.autoscale_view(scaley=True, scalex=False)
+
+        elif label == "Log scale":
+            # Toggle between linear and log scale
+            current_scale = ax.get_yscale()
+            if current_scale == "linear":
+                try:
+                    ax.set_yscale("symlog")
+                except ValueError:
+                    # If log scale fails, keep it unchecked
+                    ylim_check = [ylim_check1, ylim_check2, ylim_check3][ax_num - 1]
+                    ylim_check.set_active(1)  # Toggle log scale checkbox
+            else:
+                ax.set_yscale("linear")
+
+        fig.canvas.draw_idle()
+
+    # Connect callbacks to checkboxes
+    ylim_check1.on_clicked(lambda label: toggle_ylim_scale(label, 1))
+    ylim_check2.on_clicked(lambda label: toggle_ylim_scale(label, 2))
+    ylim_check3.on_clicked(lambda label: toggle_ylim_scale(label, 3))
+
+    # Add a reset button to restore initial coefficients.
     def reset(event):
         a4_slider.set_val(a4_init)
         a3_slider.set_val(a3_init)
@@ -380,7 +566,7 @@ def interactive_homotopy_curvature_plot():
     reset_button = plt.Button(reset_button_ax, "Reset")
     reset_button.on_clicked(reset)
 
-    # Add a button to cycle through interesting polynomials
+    # Add a button to cycle through interesting polynomials.
     current_index = 0
 
     def cycle_polynomials(event):
@@ -399,7 +585,7 @@ def interactive_homotopy_curvature_plot():
     cycle_button.on_clicked(cycle_polynomials)
 
     # Initial update to show the plot
-    update(None)
+    recalc_and_plot(None)
 
     plt.show()
 
