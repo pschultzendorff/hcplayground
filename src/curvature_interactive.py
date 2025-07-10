@@ -442,7 +442,6 @@ def interactive_homotopy_curvature_plot():
 
         ax3.set_xlabel(r"$\lambda$")
         ax3.set_xlim(1, 0)
-        ax3.set_ylim(-10, 10)
         ax3.legend()
 
         fig.canvas.draw_idle()
