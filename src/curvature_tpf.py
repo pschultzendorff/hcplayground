@@ -25,6 +25,7 @@ method, where the corrector step uses Newton"s method.
 
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import tqdm
 from matplotlib.widgets import Slider
 
@@ -60,6 +61,25 @@ INITIAL_CONDITIONS = jnp.array(
 
 MU_W = 1.0  # Viscosity of the wetting phase.
 MU_N = 1.0  # Viscosity of the nonwetting phase.
+
+
+def hessian_tensor(f):
+    """Return a function that computes the Hessian tensor of f at a point x."""
+
+    def per_component_hessian(x, *args, **kwargs):
+        return jnp.stack(
+            [
+                jax.hessian(lambda x_: f(x_, *args, **kwargs)[i])(x, *args, **kwargs)
+                for i in range(f(x, *args, **kwargs).shape[0])
+            ]
+        )
+
+    return per_component_hessian
+
+
+def apply_hessian(H, u, v):
+    """Apply the Hessian tensor H to vectors u and v."""
+    return jnp.einsum("ijk,j,k->i", H, u, v)
 
 
 class TPFModel:
@@ -183,9 +203,9 @@ class TPFModel:
         r = jnp.concatenate([r_f, r_t])
         return r
 
-    def jacobian(self, x, dt):
+    def jacobian(self, x, dt, x_prev=None):
         """Compute the Jacobian of the system at (x, beta)."""
-        J = jax.jacrev(self.residual, argnums=0)(x, dt)
+        J = jax.jacrev(self.residual, argnums=0)(x, dt, x_prev=x_prev)
         return J.reshape(-1, len(x))
 
 
@@ -206,7 +226,7 @@ def newton(model, x_init, x_prev, dt, max_iter=50, tol=1e-6):
             converged = True
             break
 
-        J = model.jacobian(x, dt=dt)
+        J = model.jacobian(x, dt=dt, x_prev=x_prev)
         dx = jnp.linalg.solve(J, -r)
         x += dx
 
@@ -247,6 +267,9 @@ def hc(
         if not converged:
             break
 
+        # Store data for the homotopy curve BEFORE updating beta.
+        model.store_curve_data(x, dt, x_prev=x_prev)
+        # Update the homotopy parameter beta only now.
         model.beta -= decay
 
     return x, converged
@@ -261,27 +284,127 @@ def solve(model, final_time, n_time_steps):
     time_progressbar = tqdm.trange(
         n_time_steps, desc="Time steps", position=time_progressbar_position, leave=True
     )
+
     solver = newton if not hasattr(model, "beta") else hc
+
     for i in time_progressbar:
         time_progressbar.set_postfix({"time_step": i + 1})
 
         # Solve the nonlinear problem at the current time step.
         x_prev = solutions[-1]
         # Use the previous time step solution as the initial guess for the solver.
-        x_next, converged = solver(model, x_prev, x_prev, dt=dt)
+        (
+            x_next,
+            converged,
+        ) = solver(model, x_prev, x_prev, dt=dt)
 
         if converged:
             solutions.append(x_next)
+
         else:
             break
 
     return solutions
 
 
+class HCModel(TPFModel):
+    """Base class for homotopy continuation models."""
+
+    def __init__(self):
+        super().__init__()
+        self.beta = (
+            1.0  # Homotopy parameter, 0 for simpler system, 1 for actual system.
+        )
+        self.betas = [self.beta]  # Store beta values for the homotopy curve.
+        self.tangents = []  # Store tangent vectors of the homotopy curve.
+        self.curvatures = []  # Store curvature values of the homotopy curve.
+
+    def h_beta_deriv(self, x, dt, x_prev=None):
+        """Compute the derivative of the homotopy problem with respect to beta."""
+        beta_save = self.beta
+
+        self.beta = 1.0
+        r_g = self.residual(x, dt, x_prev=x_prev)
+        self.beta = 0.0
+        r_f = self.residual(x, dt, x_prev=x_prev)
+
+        self.beta = beta_save
+
+        return r_g - r_f
+
+    def curve_tangent(self, x, dt, x_prev=None, jac=None):
+        """Compute the tangent vector of the homotopy curve at (x, beta)."""
+        b = self.h_beta_deriv(x, dt, x_prev=x_prev)
+        A = self.jacobian(x, dt, x_prev=x_prev) if jac is None else jac
+        tangent = jnp.linalg.solve(A, b)
+        return tangent
+
+    def curve_curvature(self, x, dt, x_prev=None, jac=None):
+        if jac is None:
+            jac = self.jacobian(x, dt, x_prev=x_prev)
+        tangent = self.curve_tangent(x, dt, x_prev=x_prev, jac=jac)
+        # Compute the Hessian of the residual.
+        H = hessian_tensor(self.residual)(x, dt, x_prev=x_prev)
+        w2 = apply_hessian(H, tangent, tangent)
+        curvature_vector = jnp.linalg.solve(jac, -w2)
+        return jnp.linalg.norm(curvature_vector)
+
+    def store_curve_data(self, x, dt, x_prev=None):
+        """Store the beta, tangent, and curvature data for the homotopy curve."""
+        self.betas.append(self.beta)
+        self.tangents.append(self.curve_tangent(x, dt, x_prev=x_prev))
+        self.curvatures.append(self.curve_curvature(x, dt, x_prev=x_prev))
+
+
+class FluxHC(HCModel):
+    """Flux homotopy continuation for the two-phase flow problem."""
+
+    def mobility_w(self, s):
+        """Mobility of the wetting phase."""
+        k_w = self.beta * s + (1 - self.beta) * jnp.where(
+            s <= 1,
+            jnp.where(s >= 0, s**2, 0.0),  # type: ignore
+            1.0,
+        )
+        return k_w / MU_W
+
+    def mobility_n(self, s):
+        """Mobility of the nonwetting phase."""
+        k_n = self.beta * (1 - s) + (1 - self.beta) * jnp.where(
+            s >= 0,
+            jnp.where(s <= 1, (1 - s) ** 2, 0.0),  # type: ignore
+            1.0,
+        )
+        return k_n / MU_N
+
+
+class DiffusionHC(HCModel):
+    r"""Vanishing diffusion homotopy continuation for the two-phase flow problem.
+
+    Cf. Jiang, J. and Tchelepi, H.A. (2018) ‘Dissipation-based continuation method for
+    multiphase flow in heterogeneous porous media’, Journal of Computational Physics,
+    375, pp. 307–336. Available at: https://doi.org/10.1016/j.jcp.2018.08.044.
+
+    We omit the additional control parameter :math:`\beta` in the paper (the
+    continuation parameter :math:`beta` is called :math:`\kappa` in the paper).
+
+    """
+
+    def compute_face_fluxes(self, p, s):
+        """Compute total and wetting phase fluxes at cell faces with vanishing diffusion."""
+        # Base model fluxes.
+        F_t, F_w = super().compute_face_fluxes(p, s)
+
+        # Compute vanishing dissipation.
+        s = jnp.concatenate([self.dirichlet_bc[0, 1:], s, self.dirichlet_bc[1, 1:]])
+        s_w_gradient = s[:-1] - s[1:]  # Negative pressure gradient across cells.
+        F_w += self.beta * self.transmissibilities * s_w_gradient
+
+        return F_t, F_w
+
+
 def plot_solution(solutions):
     """Plot the solution of the two-phase flow problem with an interactive time slider."""
-    import matplotlib.pyplot as plt
-
     # Convert solutions to numpy array for easier manipulation.
     solutions_array = jnp.array(solutions)
     n_time_steps = len(solutions)
@@ -340,116 +463,44 @@ def plot_solution(solutions):
     plt.show()
 
 
-solutions = solve(TPFModel(), final_time=1.0, n_time_steps=10)
-plot_solution(solutions)
+def plot_curvature(betas, tangents, curvatures, fig=None, ax=None):
+    """Plot the curvature of the homotopy curve."""
+
+    # Convert solutions to numpy array for easier manipulation.
+    betas_array = jnp.array(betas)
+    tangents_array = jnp.array(tangents)
+    curvatures_array = jnp.array(curvatures)
+
+    # Create figure and axis.
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Plot curvature over time steps.
+    ax.plot(betas_array, curvatures_array, marker="o", label="Curvature")
+    ax.set_xlabel(r"\lambda")
+    ax.set_ylabel(r"\kappa")
+    ax.set_title("Homotopy Curve Curvature Over Time Steps")
+    ax.grid(True)
+    ax.legend()
+
+    plt.show()
+
+    return fig, ax
 
 
-class HCModel(TPFModel):
-    """Base class for homotopy continuation models."""
-
-    def __init__(self):
-        super().__init__()
-        self.beta = (
-            1.0  # Homotopy parameter, 0 for simpler system, 1 for actual system.
-        )
-
-    def h_beta_deriv(self, x, dt, x_prev=None):
-        """Compute the derivative of the homotopy problem with respect to beta."""
-        beta_save = self.beta
-
-        self.beta = 1.0
-        r_g = self.residual(x, dt, x_prev=x_prev)
-        self.beta = 0.0
-        r_f = self.residual(x, dt, x_prev=x_prev)
-
-        self.beta = beta_save
-
-        return r_g - r_f
+# solutions = solve(TPFModel(), final_time=1.0, n_time_steps=10)
+# plot_solution(solutions)
 
 
-class FluxHC(HCModel):
-    """Flux homotopy continuation for the two-phase flow problem."""
-
-    def mobility_w(self, s):
-        """Mobility of the wetting phase."""
-        k_w = self.beta * s + (1 - self.beta) * jnp.where(
-            s <= 1,
-            jnp.where(s >= 0, s**2, 0.0),  # type: ignore
-            1.0,
-        )
-        return k_w / MU_W
-
-    def mobility_n(self, s):
-        """Mobility of the nonwetting phase."""
-        k_n = self.beta * (1 - s) + (1 - self.beta) * jnp.where(
-            s >= 0,
-            jnp.where(s <= 1, (1 - s) ** 2, 0.0),  # type: ignore
-            1.0,
-        )
-        return k_n / MU_N
-
-
-class DiffusionHC(HCModel):
-    r"""Vanishing diffusion homotopy continuation for the two-phase flow problem.
-
-    Cf. Jiang, J. and Tchelepi, H.A. (2018) ‘Dissipation-based continuation method for
-    multiphase flow in heterogeneous porous media’, Journal of Computational Physics,
-    375, pp. 307–336. Available at: https://doi.org/10.1016/j.jcp.2018.08.044.
-
-    We omit the additional control parameter :math:`\beta` in the paper (the
-    continuation parameter :math:`beta` is called :math:`\kappa` in the paper).
-
-    """
-
-    def compute_face_fluxes(self, p, s):
-        """Compute total and wetting phase fluxes at cell faces with vanishing diffusion."""
-        # Base model fluxes.
-        F_t, F_w = super().compute_face_fluxes(p, s)
-
-        # Compute vanishing dissipation.
-        s = jnp.concatenate([self.dirichlet_bc[0, 1:], s, self.dirichlet_bc[1, 1:]])
-        s_w_gradient = s[:-1] - s[1:]  # Negative pressure gradient across cells.
-        F_w += self.beta * self.transmissibilities * s_w_gradient
-
-        return F_t, F_w
-
-
-solutions = solve(FluxHC(), final_time=1.0, n_time_steps=10)
-plot_solution(solutions)
-
-solutions = solve(DiffusionHC(), final_time=1.0, n_time_steps=10)
-plot_solution(solutions)
-
-
-# def curve_tangent(x, x_prev=None, jac=None):
-#     """Compute the tangent vector of the homotopy curve at (x, beta)."""
-#     b = h_beta_deriv(x, x_prev=x_prev)
-#     A = jacobian(x, x_prev=x_prev) if jac is None else jac
-#     tangent = jnp.linalg.solve(A, b)
-#     return tangent
-
-
-# def hessian(x, x_prev=None):
-#     """Compute the Hessian of the homotopy problem at (x, beta)."""
-#     n = len(x)
-
-#     def hessian_tensor(v1, v2):
-#         """Compute the Hessian tensor of the homotopy problem."""
-#         hessian_matrix = jnp.zeros((n, n))
-#         for i in range(n):
-#             e_i = jnp.zeros(n)
-#             e_i[i] = 1.0
-#             hessian_matrix[:, i] = curve_tangent(x + e_i, x_prev=x_prev)
-
-#         return hessian_matrix
-
-#     return hessian_tensor
-
-
-# def curve_curvature(x, x_prev=None, jac=None):
-#     if jac is None:
-#         jac = jacobian(x, x_prev=x_prev)
-#     tangent = curve_tangent(x, x_prev=x_prev, jac=jac)
-#     w2 = hessian(x, x_prev=x_prev)(tangent, tangent)
-#     curvature_vector = jnp.linalg.solve(jac, -w2)
-#     return jnp.linalg.norm(curvature_vector)
+model_fluxhc = FluxHC()
+model_diffhc = DiffusionHC()
+solve(model_fluxhc, final_time=1.0, n_time_steps=1)
+solve(model_diffhc, final_time=1.0, n_time_steps=1)
+fig, ax = plot_curvature(
+    model_fluxhc.betas, model_fluxhc.tangents, model_fluxhc.curvatures
+)
+plot_curvature(
+    model_diffhc.betas, model_diffhc.tangents, model_diffhc.curvatures, fig=fig, ax=ax
+)
+# solutions = solve(DiffusionHC(), final_time=1.0, n_time_steps=10)
+# plot_solution(solutions)
