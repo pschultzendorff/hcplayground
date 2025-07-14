@@ -103,8 +103,8 @@ def interactive_homotopy_curvature_plot():
                 h_betabeta = np.zeros_like(h_xx)
                 hessian_mat = np.stack(
                     [
-                        np.concatenate([h_xx, h_xbeta], axis=-1),
-                        np.concatenate([h_xbeta, h_betabeta], axis=-1),
+                        np.concat([h_xx, h_xbeta], axis=-1),
+                        np.concat([h_xbeta, h_betabeta], axis=-1),
                     ],
                     axis=-1,
                 )
