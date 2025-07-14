@@ -45,16 +45,16 @@ SOURCE_TERMS = jnp.array(
 
 NEU_BC = jnp.array(
     [
-        [1.0, 0.3],
+        [1.0, 0.9],
         [0.0, 0.0],
     ]
-)  # Neumann boundary conditions for faces e0, e1. Total flux and wetting flux.
+)  # Neumann boundary conditions for faces e0, e2. Total flux and wetting flux.
 DIR_BC = jnp.array(
     [
         [0.0, 0.0],
-        [1.0, 0.5],
+        [3.0, 0.5],
     ]
-)  # Dirichlet boundary conditions for faces e1, e2. Pressure and saturation.
+)  # Dirichlet boundary conditions for faces e0, e2. Pressure and saturation.
 
 INITIAL_CONDITIONS = jnp.array(
     [0.0, 0.5, 0.0, 0.5]
@@ -64,30 +64,26 @@ INITIAL_CONDITIONS = jnp.array(
 MU_W = 1.0  # Viscosity of the wetting phase.
 MU_N = 1.0  # Viscosity of the nonwetting phase.
 
-beta = 0.0  # Homotopy parameter, 0 for simpler system, 1 for actual system. For simplicity, we use a global variable.
+# Homotopy parameter, 0 for simpler system, 1 for actual system. For simplicity, we use
+# a global variable.
+beta = 0.0
 
 
 def pc(s):
     """Capillary pressure function."""
-    return jnp.nan_to_num(0.1 * (1 - s) / s, nan=0.0)  # Example function
-
-
-def pc_prime(s):
-    """Derivative of the capillary pressure function."""
-    return jnp.nan_to_num(
-        -0.1 * (1 - s) / s**2, nan=0.0
-    )  # Derivative of the example function
+    # return jnp.nan_to_num(0.1 * (1 - s) / s, nan=0.0)
+    return s * 0.0
 
 
 def mobility_w(s):
     """Mobility of the wetting phase. Corey model."""
-    k_w = jnp.where(s >= 0, s**2, 0.0)
+    k_w = jnp.where(s <= 1, jnp.where(s >= 0, s**2, 0.0), 1.0)
     return k_w / MU_W  # type: ignore
 
 
 def mobility_n(s):
     """Mobility of the nonwetting phase. Corey model."""
-    k_n = jnp.where(s <= 1, (1 - s) ** 2, 0.0)
+    k_n = jnp.where(s >= 0, jnp.where(s <= 1, (1 - s) ** 2, 0.0), 1.0)
     return k_n / MU_N  # type: ignore
 
 
@@ -135,10 +131,10 @@ def compute_face_fluxes(p, s):
     m_n = jnp.zeros(NUM_CELLS + 1)
 
     for i in range(NUM_CELLS + 1):
-        m_n = m_n.at[i].set(
+        m_w = m_w.at[i].set(
             mobility_w(s[i]) if p[i] >= p[i + 1] else mobility_w(s[i + 1])
         )
-        m_w = m_w.at[i].set(
+        m_n = m_n.at[i].set(
             (
                 mobility_n(s[i])
                 if p[i] - p_c[i] >= p[i + 1] - p_c[i + 1]
@@ -197,55 +193,52 @@ def jacobian(x, dt):
     return J.reshape(-1, len(x))
 
 
-def newton(x_init, max_iter=50, tol=1e-6, dt=1.0):
+def newton(x_init, dt, max_iter=50, tol=1e-6):
     """Solve the system using Newton"s method."""
     x = x_init.copy()
+    converged = False
 
-    solver_progressbar = tqdm.trange(
+    newton_progressbar = tqdm.trange(
         max_iter, desc="Newton iterations", position=0, leave=False
     )
 
-    for i in solver_progressbar:
+    for i in newton_progressbar:
         r = residual(x, dt=dt, x_prev=x_init)
-        solver_progressbar.set_postfix({"residual_norm": jnp.linalg.norm(r)})
+        newton_progressbar.set_postfix({"residual_norm": jnp.linalg.norm(r)})
 
         if jnp.linalg.norm(r) < tol:
+            converged = True
             break
 
         J = jacobian(x, dt=dt)
         dx = jnp.linalg.solve(J, -r)
         x += dx
 
-    return x
+    return x, converged
 
 
-# def homotopy_continuation(x_init, n_steps=10, max_newton_iter=20, tol=1e-6):
-#     """Solve the system using homotopy continuation with Newton"s method."""
-#     x = x_init.copy()
+def hc(x_init, dt, decay=0.9, max_iter=10, max_newton_iter=20, newton_tol=1e-6):
+    """Solve the system using homotopy continuation with Newton"s method."""
+    x = x_init.copy()
 
-#     for i in range(n_steps):
-#         beta = (i + 1) / n_steps
+    hc_progressbar = tqdm.trange(
+        max_iter, desc="Homotopy continuation", position=1, leave=False
+    )
 
-#         # Newton"s method for the corrector step
-#         for j in range(max_newton_iter):
-#             r = residual(x, beta)
-#             if jnp.linalg.norm(r) < tol:
-#                 break
+    for i in hc_progressbar:
+        global beta
+        hc_progressbar.set_postfix({r"$\lambda$": beta})
 
-#             J = jacobian(x, beta)
-#             dx = jnp.linalg.solve(J, -r)
-#             x += dx
+        # Previous solution for the predictor step. Newton's method for the corrector
+        # step.
+        x, converged = newton(x, max_iter=max_newton_iter, tol=newton_tol, dt=dt)
 
-#             # Add damping if needed
-#             if j > max_newton_iter / 2:
-#                 x += 0.5 * dx
+        if not converged:
+            break
 
-#     return x
+        beta *= decay
 
-
-# def solve_time_step(x_prev, dt=1.0):
-#     """Solve one time step of the two-phase flow problem."""
-#     return homotopy_continuation(x_prev)
+    return x, converged
 
 
 def solve(initial_conditions, final_time, n_time_steps):
@@ -254,15 +247,19 @@ def solve(initial_conditions, final_time, n_time_steps):
     solutions = [initial_conditions]
 
     time_progressbar = tqdm.trange(
-        n_time_steps, desc="Time steps", position=1, leave=True
+        n_time_steps, desc="Time steps", position=2, leave=True
     )
     for i in time_progressbar:
         time_progressbar.set_postfix({"time_step": i + 1})
 
         # Solve the nonlinear problem at the current time step.
         x_prev = solutions[-1]
-        x_next = newton(x_prev, dt=dt)
-        solutions.append(x_next)
+        x_next, converged = newton(x_prev, dt=dt)
+
+        if converged:
+            solutions.append(x_next)
+        else:
+            break
 
     return solutions
 
@@ -271,33 +268,39 @@ def plot_solution(solutions):
     """Plot the solution of the two-phase flow problem with an interactive time slider."""
     import matplotlib.pyplot as plt
 
-    # Convert solutions to numpy array for easier manipulation
+    # Convert solutions to numpy array for easier manipulation.
     solutions_array = jnp.array(solutions)
     n_time_steps = len(solutions)
 
-    # Create figure and axis
+    # Create figure and axis.
     fig, ax = plt.subplots(figsize=(10, 6))
-    plt.subplots_adjust(bottom=0.25)  # Make room for slider
+    ax2 = ax.twinx()  # Create a second y-axis for the saturation.
+    plt.subplots_adjust(bottom=0.25)  # Make room for slider.
 
-    # Cell centers for plotting
+    # Cell centers for plotting.
     xx = jnp.linspace(0, 1, NUM_CELLS)
 
-    # Initial plot with first time step
+    # Initial plot with first time step.
     pressures = solutions_array[0, ::2]
     saturations = solutions_array[0, 1::2]
 
-    (p_line,) = ax.plot(xx, pressures, "o-", label=r"$p_n$")
-    (s_line,) = ax.plot(xx, saturations, "v-", label=r"$s_w$")
+    (p_line,) = ax.plot(xx, pressures, "o-", color="tab:blue", label=r"$p_n$")
+    (s_line,) = ax2.plot(xx, saturations, "v-", color="tab:orange", label=r"$s_w$")
 
-    # Find min and max values for consistent y-axis
-    y_min = min(solutions_array[:, :].min(), 0)
-    y_max = solutions_array[:, :].max() * 1.1
-    ax.set_ylim(y_min, y_max)
+    # Find min and max pressure values for consistent y-axis.
+    p_min = min(solutions_array[:, ::2].min(), 0)  # type: ignore
+    p_max = solutions_array[:, :].max() * 1.1
+    ax.set_ylim(p_min, p_max)  # type: ignore
+
+    ax2.set_ylim(0, 1)  # Saturation is between 0 and 1.
 
     ax.set_xlabel("x")
-    ax.set_ylabel("Value")
+    ax.set_ylabel(r"Pressure $p_n$", color="tab:blue")
+    ax2.set_ylabel(r"Wetting Saturation $s_w$", color="tab:orange")
+
     ax.set_title("Two-Phase Flow Solution (Time Step: 0)")
     ax.legend()
+    ax2.legend()
     ax.grid(True)
 
     # Add slider
@@ -325,6 +328,15 @@ def plot_solution(solutions):
 
 solutions = solve(INITIAL_CONDITIONS, final_time=1.0, n_time_steps=10)
 plot_solution(solutions)
+
+
+def flux_homotopy():
+    pass
+
+
+def dissipation_homotopy():
+    pass
+
 
 # def h_beta_deriv(x, x_prev=None):
 #     """Compute the derivative of the homotopy problem with respect to beta."""
