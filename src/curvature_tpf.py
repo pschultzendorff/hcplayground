@@ -25,8 +25,6 @@ method, where the corrector step uses Newton"s method.
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-import scipy as sp
 import tqdm
 from matplotlib.widgets import Slider
 
@@ -60,140 +58,138 @@ INITIAL_CONDITIONS = jnp.array(
     [0.0, 0.5, 0.0, 0.5]
 )  # Initial conditions for [p0, s0, p1, s1].
 
-
 MU_W = 1.0  # Viscosity of the wetting phase.
 MU_N = 1.0  # Viscosity of the nonwetting phase.
 
-# Homotopy parameter, 0 for simpler system, 1 for actual system. For simplicity, we use
-# a global variable.
-beta = 0.0
 
+class TPFModel:
+    def __init__(self) -> None:
+        self.num_cells = NUM_CELLS
+        self.transmissibilities = TRANSMISSIBILITIES
+        self.porosities = POROSITIES
+        self.source_terms = SOURCE_TERMS
+        self.neumann_bc = NEU_BC
+        self.dirichlet_bc = DIR_BC
+        self.initial_conditions = INITIAL_CONDITIONS
+        self.mu_w = MU_W
+        self.mu_n = MU_N
 
-def pc(s):
-    """Capillary pressure function."""
-    # return jnp.nan_to_num(0.1 * (1 - s) / s, nan=0.0)
-    return s * 0.0
+    def pc(self, s):
+        """Capillary pressure function."""
+        # return jnp.nan_to_num(0.1 * (1 - s) / s, nan=0.0)
+        return s * 0.0
 
+    def mobility_w(self, s):
+        """Mobility of the wetting phase. Corey model."""
+        k_w = jnp.where(s <= 1, jnp.where(s >= 0, s**2, 0.0), 1.0)  # type: ignore
+        return k_w / self.mu_w  # type: ignore
 
-def mobility_w(s):
-    """Mobility of the wetting phase. Corey model."""
-    k_w = jnp.where(s <= 1, jnp.where(s >= 0, s**2, 0.0), 1.0)
-    return k_w / MU_W  # type: ignore
+    def mobility_n(self, s):
+        """Mobility of the nonwetting phase. Corey model."""
+        k_n = jnp.where(s >= 0, jnp.where(s <= 1, (1 - s) ** 2, 0.0), 1.0)  # type: ignore
+        return k_n / self.mu_n  # type: ignore
 
+    def compute_face_fluxes(self, p, s):
+        """Compute total and wetting phase fluxes at cell faces.
 
-def mobility_n(s):
-    """Mobility of the nonwetting phase. Corey model."""
-    k_n = jnp.where(s >= 0, jnp.where(s <= 1, (1 - s) ** 2, 0.0), 1.0)
-    return k_n / MU_N  # type: ignore
+        Note: The code is written general to handle different boundary conditions and source
+        terms.
 
+        Args:
+            p: Nonwetting pressures at cell centers [p0, p1].
+            s: Wetting saturations at cell centers [s0, s1].
 
-# def mobility_w(s):
-#     """Mobility of the wetting phase."""
-#     k_w = beta * s + (1 - beta) * jnp.where(s >= 0, s**2, 0.0)
-#     return k_w / MU_W
+        Returns:
+            F_t: Total fluxes at faces [F0, F1, F2].
+            F_w: Wetting phase fluxes at faces [F0, F1, F2].
 
+        """
+        # Add Dirichlet boundary conditions.
+        p = jnp.concatenate([self.dirichlet_bc[0, :1], p, self.dirichlet_bc[1, :1]])
+        s = jnp.concatenate([self.dirichlet_bc[0, 1:], s, self.dirichlet_bc[1, 1:]])
 
-# def mobility_n(s):
-#     """Mobility of the nonwetting phase."""
-#     k_n = beta * (1 - s) + (1 - beta) * jnp.where(s <= 1, (1 - s) ** 2, 0.0)
-#     return k_n / MU_N
+        p_c = self.pc(s)
 
+        # Calculate fluxes at each face. After adding Dirichlet bc, the indices work as
+        # follows. Face i has cell i on the left and cell i + 1 on the right. The negative
+        # pressure gradient across cell i is therefore given by p[i] - p[i + 1].
 
-def compute_face_fluxes(p, s):
-    """Compute total and wetting phase fluxes at cell faces.
+        # Phase potential upwinding of the mobilities. The mobilities for Neumann
+        # boundaries are upwinded as well. This is not a problem, because the
+        # transmissibilities are set to 0 at the Neumann boundary.
+        m_w = jnp.zeros(self.num_cells + 1)
+        m_n = jnp.zeros(self.num_cells + 1)
 
-    Note: The code is written general to handle different boundary conditions and source
-    terms.
-
-    Args:
-        p: Nonwetting pressures at cell centers [p0, p1].
-        s: Wetting saturations at cell centers [s0, s1].
-
-    Returns:
-        F_t: Total fluxes at faces [F0, F1, F2].
-        F_w: Wetting phase fluxes at faces [F0, F1, F2].
-
-    """
-    # Add Dirichlet boundary conditions.
-    p = jnp.concatenate([DIR_BC[0, :1], p, DIR_BC[1, :1]])
-    s = jnp.concatenate([DIR_BC[0, 1:], s, DIR_BC[1, 1:]])
-
-    p_c = pc(s)
-
-    # Calculate fluxes at each face. After adding Dirichlet bc, the indices work as
-    # follows. Face i has cell i on the left and cell i + 1 on the right. The negative
-    # pressure gradient across cell i is therefore given by p[i] - p[i + 1].
-
-    # Phase potential upwinding of the mobilities. The mobilities for Neumann
-    # boundaries are upwinded as well. This is not a problem, because the
-    # transmissibilities are set to 0 at the Neumann boundary.
-    m_w = jnp.zeros(NUM_CELLS + 1)
-    m_n = jnp.zeros(NUM_CELLS + 1)
-
-    for i in range(NUM_CELLS + 1):
-        m_w = m_w.at[i].set(
-            mobility_w(s[i]) if p[i] >= p[i + 1] else mobility_w(s[i + 1])
-        )
-        m_n = m_n.at[i].set(
-            (
-                mobility_n(s[i])
-                if p[i] - p_c[i] >= p[i + 1] - p_c[i + 1]
-                else mobility_n(s[i + 1])
+        for i in range(self.num_cells + 1):
+            m_w = m_w.at[i].set(
+                self.mobility_w(s[i]) if p[i] >= p[i + 1] else self.mobility_w(s[i + 1])
             )
+            m_n = m_n.at[i].set(
+                (
+                    self.mobility_n(s[i])
+                    if p[i] - p_c[i] >= p[i + 1] - p_c[i + 1]
+                    else self.mobility_n(s[i + 1])
+                )
+            )
+
+        # Handle NaN values in mobilities.
+        m_n = jnp.nan_to_num(m_n, nan=0.0)
+        m_w = jnp.nan_to_num(m_w, nan=0.0)
+
+        m_t = m_n + m_w
+
+        # TPFA fluxes at the faces.
+        p_n_gradient = p[:-1] - p[1:]  # Negative pressure gradient across cells.
+        p_c_gradient = (
+            p_c[:-1] - p_c[:-1]
+        )  # Negative capillary pressure gradient across cells.
+
+        F_t = self.transmissibilities * (m_t * p_n_gradient - m_w * p_c_gradient)
+        F_w = (
+            F_t * (m_w / m_t)
+            - self.transmissibilities[i] * m_w * m_n / m_t * p_c_gradient
         )
 
-    # Handle NaN values in mobilities.
-    m_n = jnp.nan_to_num(m_n, nan=0.0)
-    m_w = jnp.nan_to_num(m_w, nan=0.0)
+        # Add Neumann boundary conditions.
+        F_t = F_t.at[0].add(self.neumann_bc[0, 0])
+        F_w = F_w.at[0].add(self.neumann_bc[0, 1])
+        F_t = F_t.at[-1].add(self.neumann_bc[1, 0])
+        F_w = F_w.at[-1].add(self.neumann_bc[1, 1])
 
-    m_t = m_n + m_w
+        return F_t, F_w
 
-    # TPFA fluxes at the faces.
-    p_n_gradient = p[:-1] - p[1:]  # Negative pressure gradient across cells.
-    p_c_gradient = (
-        p_c[:-1] - p_c[:-1]
-    )  # Negative capillary pressure gradient across cells.
+    def residual(self, x, dt, x_prev=None):
+        """Compute the residual of the system at (x, beta)."""
+        p = x[::2]
+        s = x[1::2]
 
-    F_t = TRANSMISSIBILITIES * (m_t * p_n_gradient - m_w * p_c_gradient)
-    F_w = F_t * (m_w / m_t) - TRANSMISSIBILITIES[i] * m_w * m_n / m_t * p_c_gradient
+        if x_prev is None:
+            s_prev = self.initial_conditions[1::2]
+        else:
+            s_prev = x_prev[1::2]
 
-    # Add Neumann boundary conditions.
-    F_t = F_t.at[0].add(NEU_BC[0, 0])
-    F_w = F_w.at[0].add(NEU_BC[0, 1])
-    F_t = F_t.at[-1].add(NEU_BC[1, 0])
-    F_w = F_w.at[-1].add(NEU_BC[1, 1])
+        # Compute fluxes.
+        F_t, F_w = self.compute_face_fluxes(p, s)
 
-    return F_t, F_w
+        # Residuals for flow and transport equations.
+        r_f = F_t[1:] - F_t[:-1] - self.source_terms[:, 0]
+        r_t = (
+            self.porosities * (s - s_prev) / dt
+            + F_w[1:]
+            - F_w[:-1]
+            - self.source_terms[:, 1]
+        )
 
+        r = jnp.concatenate([r_f, r_t])
+        return r
 
-def residual(x, dt, x_prev=None):
-    """Compute the residual of the system at (x, beta)."""
-    p = x[::2]
-    s = x[1::2]
-
-    if x_prev is None:
-        s_prev = INITIAL_CONDITIONS[1::2]
-    else:
-        s_prev = x_prev[1::2]
-
-    # Compute fluxes.
-    F_t, F_w = compute_face_fluxes(p, s)
-
-    # Residuals for flow and transport equations.
-    r_f = F_t[1:] - F_t[:-1] - SOURCE_TERMS[:, 0]
-    r_t = POROSITIES * (s - s_prev) / dt + F_w[1:] - F_w[:-1] - SOURCE_TERMS[:, 1]
-
-    r = jnp.concatenate([r_f, r_t])
-    return r
+    def jacobian(self, x, dt):
+        """Compute the Jacobian of the system at (x, beta)."""
+        J = jax.jacrev(self.residual, argnums=0)(x, dt)
+        return J.reshape(-1, len(x))
 
 
-def jacobian(x, dt):
-    """Compute the Jacobian of the system at (x, beta)."""
-    J = jax.jacrev(residual, argnums=0)(x, dt)
-    return J.reshape(-1, len(x))
-
-
-def newton(x_init, dt, max_iter=50, tol=1e-6):
+def newton(model, x_init, x_prev, dt, max_iter=50, tol=1e-6):
     """Solve the system using Newton"s method."""
     x = x_init.copy()
     converged = False
@@ -203,58 +199,76 @@ def newton(x_init, dt, max_iter=50, tol=1e-6):
     )
 
     for i in newton_progressbar:
-        r = residual(x, dt=dt, x_prev=x_init)
+        r = model.residual(x, dt=dt, x_prev=x_prev)
         newton_progressbar.set_postfix({"residual_norm": jnp.linalg.norm(r)})
 
         if jnp.linalg.norm(r) < tol:
             converged = True
             break
 
-        J = jacobian(x, dt=dt)
+        J = model.jacobian(x, dt=dt)
         dx = jnp.linalg.solve(J, -r)
         x += dx
 
     return x, converged
 
 
-def hc(x_init, dt, decay=0.9, max_iter=10, max_newton_iter=20, newton_tol=1e-6):
+def hc(
+    model,
+    x_prev,
+    x_init,
+    dt,
+    decay=0.1,
+    max_iter=11,
+    max_newton_iter=20,
+    newton_tol=1e-6,
+):
     """Solve the system using homotopy continuation with Newton"s method."""
+    assert hasattr(model, "beta"), (
+        "Model must have a beta attribute for homotopy continuation."
+    )
+
     x = x_init.copy()
+    model.beta = 1.0
 
     hc_progressbar = tqdm.trange(
         max_iter, desc="Homotopy continuation", position=1, leave=False
     )
 
     for i in hc_progressbar:
-        global beta
-        hc_progressbar.set_postfix({r"$\lambda$": beta})
+        hc_progressbar.set_postfix({r"$\lambda$": model.beta})
 
         # Previous solution for the predictor step. Newton's method for the corrector
         # step.
-        x, converged = newton(x, max_iter=max_newton_iter, tol=newton_tol, dt=dt)
+        x, converged = newton(
+            model, x, x_prev, max_iter=max_newton_iter, tol=newton_tol, dt=dt
+        )
 
         if not converged:
             break
 
-        beta *= decay
+        model.beta -= decay
 
     return x, converged
 
 
-def solve(initial_conditions, final_time, n_time_steps):
+def solve(model, final_time, n_time_steps):
     """Solve the two-phase flow problem over a given time period."""
     dt = final_time / n_time_steps
-    solutions = [initial_conditions]
+    solutions = [model.initial_conditions]
 
+    time_progressbar_position = 2 if hasattr(model, "beta") else 1
     time_progressbar = tqdm.trange(
-        n_time_steps, desc="Time steps", position=2, leave=True
+        n_time_steps, desc="Time steps", position=time_progressbar_position, leave=True
     )
+    solver = newton if not hasattr(model, "beta") else hc
     for i in time_progressbar:
         time_progressbar.set_postfix({"time_step": i + 1})
 
         # Solve the nonlinear problem at the current time step.
         x_prev = solutions[-1]
-        x_next, converged = newton(x_prev, dt=dt)
+        # Use the previous time step solution as the initial guess for the solver.
+        x_next, converged = solver(model, x_prev, x_prev, dt=dt)
 
         if converged:
             solutions.append(x_next)
@@ -326,30 +340,85 @@ def plot_solution(solutions):
     plt.show()
 
 
-solutions = solve(INITIAL_CONDITIONS, final_time=1.0, n_time_steps=10)
+solutions = solve(TPFModel(), final_time=1.0, n_time_steps=10)
 plot_solution(solutions)
 
 
-def flux_homotopy():
-    pass
+class HCModel(TPFModel):
+    """Base class for homotopy continuation models."""
+
+    def __init__(self):
+        super().__init__()
+        self.beta = (
+            1.0  # Homotopy parameter, 0 for simpler system, 1 for actual system.
+        )
+
+    def h_beta_deriv(self, x, dt, x_prev=None):
+        """Compute the derivative of the homotopy problem with respect to beta."""
+        beta_save = self.beta
+
+        self.beta = 1.0
+        r_g = self.residual(x, dt, x_prev=x_prev)
+        self.beta = 0.0
+        r_f = self.residual(x, dt, x_prev=x_prev)
+
+        self.beta = beta_save
+
+        return r_g - r_f
 
 
-def dissipation_homotopy():
-    pass
+class FluxHC(HCModel):
+    """Flux homotopy continuation for the two-phase flow problem."""
+
+    def mobility_w(self, s):
+        """Mobility of the wetting phase."""
+        k_w = self.beta * s + (1 - self.beta) * jnp.where(
+            s <= 1,
+            jnp.where(s >= 0, s**2, 0.0),  # type: ignore
+            1.0,
+        )
+        return k_w / MU_W
+
+    def mobility_n(self, s):
+        """Mobility of the nonwetting phase."""
+        k_n = self.beta * (1 - s) + (1 - self.beta) * jnp.where(
+            s >= 0,
+            jnp.where(s <= 1, (1 - s) ** 2, 0.0),  # type: ignore
+            1.0,
+        )
+        return k_n / MU_N
 
 
-# def h_beta_deriv(x, x_prev=None):
-#     """Compute the derivative of the homotopy problem with respect to beta."""
-#     global beta
-#     beta_save = beta
+class DiffusionHC(HCModel):
+    r"""Vanishing diffusion homotopy continuation for the two-phase flow problem.
 
-#     beta = 1.0
-#     r_g = residual(x, x_prev=x_prev)
-#     beta = 0.0
-#     r_f = residual(x, x_prev=x_prev)
+    Cf. Jiang, J. and Tchelepi, H.A. (2018) ‘Dissipation-based continuation method for
+    multiphase flow in heterogeneous porous media’, Journal of Computational Physics,
+    375, pp. 307–336. Available at: https://doi.org/10.1016/j.jcp.2018.08.044.
 
-#     beta = beta_save
-#     return r_g - r_f
+    We omit the additional control parameter :math:`\beta` in the paper (the
+    continuation parameter :math:`beta` is called :math:`\kappa` in the paper).
+
+    """
+
+    def compute_face_fluxes(self, p, s):
+        """Compute total and wetting phase fluxes at cell faces with vanishing diffusion."""
+        # Base model fluxes.
+        F_t, F_w = super().compute_face_fluxes(p, s)
+
+        # Compute vanishing dissipation.
+        s = jnp.concatenate([self.dirichlet_bc[0, 1:], s, self.dirichlet_bc[1, 1:]])
+        s_w_gradient = s[:-1] - s[1:]  # Negative pressure gradient across cells.
+        F_w += self.beta * self.transmissibilities * s_w_gradient
+
+        return F_t, F_w
+
+
+solutions = solve(FluxHC(), final_time=1.0, n_time_steps=10)
+plot_solution(solutions)
+
+solutions = solve(DiffusionHC(), final_time=1.0, n_time_steps=10)
+plot_solution(solutions)
 
 
 # def curve_tangent(x, x_prev=None, jac=None):
