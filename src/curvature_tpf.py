@@ -23,41 +23,62 @@ method, where the corrector step uses Newton"s method.
 
 """
 
+import logging
+import pathlib
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import tqdm
+import viztracer
+from jax import make_jaxpr
 from matplotlib.widgets import Slider
 
-NUM_CELLS = 2
+dirname = pathlib.Path(__file__).parent
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-TRANSMISSIBILITIES = jnp.array(
-    [0.0, 1.0, 2.0]
-)  # Transmissibilities for faces e0, e1, e2.
+NUM_CELLS = 50
+
+
+RAND = jax.random.uniform(
+    jax.random.PRNGKey(0), shape=(NUM_CELLS + 1,), minval=-1.0, maxval=2.0
+)
+
+TRANSMISSIBILITIES = jnp.pow(10, RAND)
+TRANSMISSIBILITIES = TRANSMISSIBILITIES.at[0].set(0.0)
+TRANSMISSIBILITIES = TRANSMISSIBILITIES.at[-1].set(TRANSMISSIBILITIES[-1] * 2)
 # Transmissibility at the Dirichlet boundary has to be doubled.
 # Transmissibility at the Neumann boundary hast to be set to 0.
 
-POROSITIES = jnp.array([0.5, 0.5])  # Porosities for cells c0, c1.
-SOURCE_TERMS = jnp.array(
-    [[0.0, 0.0], [0.0, 0.0]]
-)  # Source terms for cells c0, c1. Total and wetting source.
+
+POROSITIES = (RAND + 2.5) / 5.0  # Scale to [0.1, 0.5] range.
+POROSITIES = POROSITIES[1:]  # Porosities are cellwise, not facewise.
+
+SOURCE_TERMS = jnp.full(
+    (NUM_CELLS, 2), 0.0
+)  # Source terms for cells c0, c1,... . Total and wetting source.
 
 NEU_BC = jnp.array(
     [
-        [1.0, 0.9],
+        [1.0, 0.0],
         [0.0, 0.0],
     ]
-)  # Neumann boundary conditions for faces e0, e2. Total flux and wetting flux.
+)  # Neumann boundary conditions for left and right boundary. Total flux and wetting flux.
 DIR_BC = jnp.array(
     [
         [0.0, 0.0],
-        [3.0, 0.5],
+        [3.0, 0.2],
     ]
-)  # Dirichlet boundary conditions for faces e0, e2. Pressure and saturation.
+)  # Dirichlet boundary conditions for for left and right boundary. Pressure and saturation.
 
-INITIAL_CONDITIONS = jnp.array(
-    [0.0, 0.5, 0.0, 0.5]
-)  # Initial conditions for [p0, s0, p1, s1].
+INITIAL_CONDITIONS = jnp.stack(
+    [
+        jnp.zeros((NUM_CELLS,)),
+        jnp.full((NUM_CELLS,), 0.98),
+    ],
+    axis=1,
+).flatten()  # Initial conditions for pressure and saturation at cell centers.
 
 MU_W = 1.0  # Viscosity of the wetting phase.
 MU_N = 1.0  # Viscosity of the nonwetting phase.
@@ -66,10 +87,13 @@ MU_N = 1.0  # Viscosity of the nonwetting phase.
 def hessian_tensor(f):
     """Return a function that computes the Hessian tensor of f at a point x."""
 
+    @jax.jit
     def per_component_hessian(x, *args, **kwargs):
         return jnp.stack(
             [
-                jax.hessian(lambda x_: f(x_, *args, **kwargs)[i])(x, *args, **kwargs)
+                jax.hessian(lambda x_, *args, **kwargs: f(x_, *args, **kwargs)[i])(
+                    x, *args, **kwargs
+                )
                 for i in range(f(x, *args, **kwargs).shape[0])
             ]
         )
@@ -94,19 +118,36 @@ class TPFModel:
         self.mu_w = MU_W
         self.mu_n = MU_N
 
+        self.nb = 0.5
+        self.n1 = 2
+        self.n2 = 1 + 2 / self.nb
+        self.n3 = 1
+
+        self.linear_system = (
+            None  # Placeholder for the linear system (Jacobian, residual).
+        )
+
     def pc(self, s):
-        """Capillary pressure function."""
-        # return jnp.nan_to_num(0.1 * (1 - s) / s, nan=0.0)
-        return s * 0.0
+        """Capillary pressure function. Brooks-Corey model."""
+        return jnp.nan_to_num(5.0 * s ** (-1 / self.nb), nan=0.0)
+        # return s * 0.0
 
     def mobility_w(self, s):
-        """Mobility of the wetting phase. Corey model."""
-        k_w = jnp.where(s <= 1, jnp.where(s >= 0, s**2, 0.0), 1.0)  # type: ignore
+        """Mobility of the wetting phase. Brooks-Corey model."""
+        k_w = jnp.where(
+            s <= 1,
+            jnp.where(s >= 0, s ** (self.n1 + self.n2 * self.n3), 0.0),  # type: ignore
+            1.0,
+        )
         return k_w / self.mu_w  # type: ignore
 
     def mobility_n(self, s):
-        """Mobility of the nonwetting phase. Corey model."""
-        k_n = jnp.where(s >= 0, jnp.where(s <= 1, (1 - s) ** 2, 0.0), 1.0)  # type: ignore
+        """Mobility of the nonwetting phase. Brooks-Corey model."""
+        k_n = jnp.where(
+            s >= 0,
+            jnp.where(s <= 1, (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3, 0.0),  # type: ignore
+            1.0,
+        )
         return k_n / self.mu_n  # type: ignore
 
     def compute_face_fluxes(self, p, s):
@@ -134,23 +175,23 @@ class TPFModel:
         # follows. Face i has cell i on the left and cell i + 1 on the right. The negative
         # pressure gradient across cell i is therefore given by p[i] - p[i + 1].
 
+        # TPFA fluxes at the faces.
+        p_n_gradient = p[:-1] - p[1:]  # Negative pressure gradient across cells.
+        p_c_gradient = (
+            p_c[:-1] - p_c[:-1]
+        )  # Negative capillary pressure gradient across cells.
+
         # Phase potential upwinding of the mobilities. The mobilities for Neumann
         # boundaries are upwinded as well. This is not a problem, because the
         # transmissibilities are set to 0 at the Neumann boundary.
-        m_w = jnp.zeros(self.num_cells + 1)
-        m_n = jnp.zeros(self.num_cells + 1)
-
-        for i in range(self.num_cells + 1):
-            m_w = m_w.at[i].set(
-                self.mobility_w(s[i]) if p[i] >= p[i + 1] else self.mobility_w(s[i + 1])
-            )
-            m_n = m_n.at[i].set(
-                (
-                    self.mobility_n(s[i])
-                    if p[i] - p_c[i] >= p[i + 1] - p_c[i + 1]
-                    else self.mobility_n(s[i + 1])
-                )
-            )
+        m_w = jnp.where(
+            p_n_gradient >= 0, self.mobility_w(s[:-1]), self.mobility_w(s[1:])
+        )
+        m_n = jnp.where(
+            p_n_gradient - p_c_gradient >= 0,
+            self.mobility_n(s[:-1]),
+            self.mobility_n(s[1:]),
+        )
 
         # Handle NaN values in mobilities.
         m_n = jnp.nan_to_num(m_n, nan=0.0)
@@ -158,16 +199,9 @@ class TPFModel:
 
         m_t = m_n + m_w
 
-        # TPFA fluxes at the faces.
-        p_n_gradient = p[:-1] - p[1:]  # Negative pressure gradient across cells.
-        p_c_gradient = (
-            p_c[:-1] - p_c[:-1]
-        )  # Negative capillary pressure gradient across cells.
-
         F_t = self.transmissibilities * (m_t * p_n_gradient - m_w * p_c_gradient)
         F_w = (
-            F_t * (m_w / m_t)
-            - self.transmissibilities[i] * m_w * m_n / m_t * p_c_gradient
+            F_t * (m_w / m_t) - self.transmissibilities * m_w * m_n / m_t * p_c_gradient
         )
 
         # Add Neumann boundary conditions.
@@ -206,10 +240,11 @@ class TPFModel:
     def jacobian(self, x, dt, x_prev=None):
         """Compute the Jacobian of the system at (x, beta)."""
         J = jax.jacrev(self.residual, argnums=0)(x, dt, x_prev=x_prev)
+        make_jaxpr(jax.jacrev(self.residual, argnums=0))(x, dt, x_prev=x_prev)
         return J.reshape(-1, len(x))
 
 
-def newton(model, x_init, x_prev, dt, max_iter=50, tol=1e-6):
+def newton(model, x_init, x_prev, dt, max_iter=50, tol=1e-4):
     """Solve the system using Newton"s method."""
     x = x_init.copy()
     converged = False
@@ -220,15 +255,29 @@ def newton(model, x_init, x_prev, dt, max_iter=50, tol=1e-6):
 
     for i in newton_progressbar:
         r = model.residual(x, dt=dt, x_prev=x_prev)
-        newton_progressbar.set_postfix({"residual_norm": jnp.linalg.norm(r)})
+        newton_progressbar.set_postfix(
+            {"residual_norm": jnp.linalg.norm(r) / jnp.sqrt(len(r))}
+        )
 
-        if jnp.linalg.norm(r) < tol:
+        if jnp.linalg.norm(r) / jnp.sqrt(len(r)) < tol:
             converged = True
             break
 
         J = model.jacobian(x, dt=dt, x_prev=x_prev)
+        model.linear_system = (J, r)
+
         dx = jnp.linalg.solve(J, -r)
+        if jnp.isnan(dx).any() or jnp.isinf(dx).any():
+            print(
+                make_jaxpr(jax.jacrev(model.residual, argnums=0))(x, dt, x_prev=x_prev)
+            )
+            raise RuntimeError("Newton step resulted in NaN or Inf values.")
         x += dx
+
+        # Ensure physical saturation values plus small epsilon to avoid
+        p = x[::2]
+        s = jnp.clip(x[1::2], 0.0001, 1.0)
+        x = jnp.stack([p, s], axis=1).flatten()
 
     return x, converged
 
@@ -238,10 +287,10 @@ def hc(
     x_prev,
     x_init,
     dt,
-    decay=0.1,
-    max_iter=11,
+    decay=1 / 30,
+    max_iter=31,
     max_newton_iter=20,
-    newton_tol=1e-6,
+    newton_tol=1e-4,
 ):
     """Solve the system using homotopy continuation with Newton"s method."""
     assert hasattr(model, "beta"), (
@@ -269,6 +318,8 @@ def hc(
 
         # Store data for the homotopy curve BEFORE updating beta.
         model.store_curve_data(x, dt, x_prev=x_prev)
+        model.store_intermediate_solutions(x)
+
         # Update the homotopy parameter beta only now.
         model.beta -= decay
 
@@ -282,7 +333,7 @@ def solve(model, final_time, n_time_steps):
 
     time_progressbar_position = 2 if hasattr(model, "beta") else 1
     time_progressbar = tqdm.trange(
-        n_time_steps, desc="Time steps", position=time_progressbar_position, leave=True
+        n_time_steps, desc="Time steps", position=time_progressbar_position, leave=False
     )
 
     solver = newton if not hasattr(model, "beta") else hc
@@ -302,9 +353,12 @@ def solve(model, final_time, n_time_steps):
             solutions.append(x_next)
 
         else:
+            print(
+                f"Model {model.__class__.__name__} did not converge at time step {i + 1}."
+            )
             break
 
-    return solutions
+    return solutions, converged
 
 
 class HCModel(TPFModel):
@@ -315,9 +369,12 @@ class HCModel(TPFModel):
         self.beta = (
             1.0  # Homotopy parameter, 0 for simpler system, 1 for actual system.
         )
-        self.betas = [self.beta]  # Store beta values for the homotopy curve.
+        self.betas = []  # Store beta values for the homotopy curve.
         self.tangents = []  # Store tangent vectors of the homotopy curve.
-        self.curvatures = []  # Store curvature values of the homotopy curve.
+        self.curvature_vectors = []  # Store curvature vectors of the homotopy curve.)
+        self.intermediate_solutions = []  # Store intermediate solver states.
+
+        self.per_component_hessian = hessian_tensor(self.residual)
 
     def h_beta_deriv(self, x, dt, x_prev=None):
         """Compute the derivative of the homotopy problem with respect to beta."""
@@ -332,35 +389,58 @@ class HCModel(TPFModel):
 
         return r_g - r_f
 
-    def curve_tangent(self, x, dt, x_prev=None, jac=None):
+    def tangent(self, x, dt, x_prev=None, jac=None):
         """Compute the tangent vector of the homotopy curve at (x, beta)."""
         b = self.h_beta_deriv(x, dt, x_prev=x_prev)
         A = self.jacobian(x, dt, x_prev=x_prev) if jac is None else jac
         tangent = jnp.linalg.solve(A, b)
         return tangent
 
-    def curve_curvature(self, x, dt, x_prev=None, jac=None):
+    def curvature_vector(self, x, dt, x_prev=None, jac=None, tangent=None):
         if jac is None:
             jac = self.jacobian(x, dt, x_prev=x_prev)
-        tangent = self.curve_tangent(x, dt, x_prev=x_prev, jac=jac)
+        if tangent is None:
+            tangent = self.tangent(x, dt, x_prev=x_prev, jac=jac)
         # Compute the Hessian of the residual.
-        H = hessian_tensor(self.residual)(x, dt, x_prev=x_prev)
+        H = self.per_component_hessian(x, dt, x_prev=x_prev)
         w2 = apply_hessian(H, tangent, tangent)
         curvature_vector = jnp.linalg.solve(jac, -w2)
-        return jnp.linalg.norm(curvature_vector)
+        return curvature_vector
 
     def store_curve_data(self, x, dt, x_prev=None):
         """Store the beta, tangent, and curvature data for the homotopy curve."""
         self.betas.append(self.beta)
-        self.tangents.append(self.curve_tangent(x, dt, x_prev=x_prev))
-        self.curvatures.append(self.curve_curvature(x, dt, x_prev=x_prev))
+        self.tangents.append(
+            self.tangent(x, dt, x_prev=x_prev, jac=self.linear_system[0])  # type: ignore
+        )
+        self.curvature_vectors.append(
+            self.curvature_vector(
+                x,
+                dt,
+                x_prev=x_prev,
+                jac=self.linear_system[0],  # type: ignore
+                tangent=self.tangents[-1],
+            )
+        )
+
+    def store_intermediate_solutions(self, x):
+        self.intermediate_solutions.append(x)
+
+    def curve_curvature_approx(self):
+        hh = (jnp.asarray(self.betas[1:]) - jnp.asarray(self.betas[:-1]))[..., None]
+        curvatures_approx = (
+            jnp.asarray(self.tangents[1:]) - jnp.asarray(self.tangents[:-1])
+        ) * (2 / (hh + hh))
+        return jnp.linalg.norm(curvatures_approx, axis=-1)
 
 
-class FluxHC(HCModel):
+class FluxHC1(HCModel):
     """Flux homotopy continuation for the two-phase flow problem."""
 
+    def pc(self, s):
+        return self.beta * 3 * (2 - s) + (1 - self.beta) * super().pc(s)
+
     def mobility_w(self, s):
-        """Mobility of the wetting phase."""
         k_w = self.beta * s + (1 - self.beta) * jnp.where(
             s <= 1,
             jnp.where(s >= 0, s**2, 0.0),  # type: ignore
@@ -369,13 +449,18 @@ class FluxHC(HCModel):
         return k_w / MU_W
 
     def mobility_n(self, s):
-        """Mobility of the nonwetting phase."""
         k_n = self.beta * (1 - s) + (1 - self.beta) * jnp.where(
             s >= 0,
             jnp.where(s <= 1, (1 - s) ** 2, 0.0),  # type: ignore
             1.0,
         )
         return k_n / MU_N
+
+
+class FluxHC2(FluxHC1):
+    def pc(self, s):
+        """Capillary pressure function."""
+        return (1 - self.beta) * super().pc(s)
 
 
 class DiffusionHC(HCModel):
@@ -385,10 +470,15 @@ class DiffusionHC(HCModel):
     multiphase flow in heterogeneous porous media’, Journal of Computational Physics,
     375, pp. 307–336. Available at: https://doi.org/10.1016/j.jcp.2018.08.044.
 
-    We omit the additional control parameter :math:`\beta` in the paper (the
-    continuation parameter :math:`beta` is called :math:`\kappa` in the paper).
+    The parameter controlling the strength of the diffusion, called :math:`\beta` in the
+    paper, is denoted :math:`\kappa` here (the continuation parameter :math:`beta` is
+    called :math:`\kappa` in the paper).
 
     """
+
+    def __init__(self, kappa=1.0):
+        super().__init__()
+        self.kappa = kappa
 
     def compute_face_fluxes(self, p, s):
         """Compute total and wetting phase fluxes at cell faces with vanishing diffusion."""
@@ -398,12 +488,12 @@ class DiffusionHC(HCModel):
         # Compute vanishing dissipation.
         s = jnp.concatenate([self.dirichlet_bc[0, 1:], s, self.dirichlet_bc[1, 1:]])
         s_w_gradient = s[:-1] - s[1:]  # Negative pressure gradient across cells.
-        F_w += self.beta * self.transmissibilities * s_w_gradient
+        F_w += self.kappa * self.beta * self.transmissibilities * s_w_gradient
 
         return F_t, F_w
 
 
-def plot_solution(solutions):
+def plot_solution(model, solutions, plot_pw=False):
     """Plot the solution of the two-phase flow problem with an interactive time slider."""
     # Convert solutions to numpy array for easier manipulation.
     solutions_array = jnp.array(solutions)
@@ -420,20 +510,30 @@ def plot_solution(solutions):
     # Initial plot with first time step.
     pressures = solutions_array[0, ::2]
     saturations = solutions_array[0, 1::2]
+    if plot_pw:
+        wetting_pressures = solutions_array[:, ::2] - model.pc(solutions_array[:, 1::2])
+    else:
+        wetting_pressures = jnp.zeros_like(solutions_array[:, ::2])
 
-    (p_line,) = ax.plot(xx, pressures, "o-", color="tab:blue", label=r"$p_n$")
+    (pn_line,) = ax.plot(xx, pressures, "o-", color="tab:blue", label=r"$p_n$")
+    (pw_line,) = ax.plot(
+        xx, wetting_pressures[0], "x-", color="tab:green", label=r"$p_w$"
+    )
     (s_line,) = ax2.plot(xx, saturations, "v-", color="tab:orange", label=r"$s_w$")
 
     # Find min and max pressure values for consistent y-axis.
-    p_min = min(solutions_array[:, ::2].min(), 0)  # type: ignore
-    p_max = solutions_array[:, :].max() * 1.1
+    p_min = min(
+        jnp.concatenate([solutions_array[:, ::2], wetting_pressures]).min(),  # type: ignore
+        0,
+    )
+    p_max = jnp.concatenate([solutions_array[:, ::2], wetting_pressures]).max() * 1.1
     ax.set_ylim(p_min, p_max)  # type: ignore
 
     ax2.set_ylim(0, 1)  # Saturation is between 0 and 1.
 
     ax.set_xlabel("x")
-    ax.set_ylabel(r"Pressure $p_n$", color="tab:blue")
-    ax2.set_ylabel(r"Wetting Saturation $s_w$", color="tab:orange")
+    ax.set_ylabel("Pressures", color="tab:blue")
+    ax2.set_ylabel(r"Wetting saturation $s_w$", color="tab:orange")
 
     ax.set_title("Two-Phase Flow Solution (Time Step: 0)")
     ax.legend()
@@ -454,7 +554,8 @@ def plot_solution(solutions):
     # Update function for slider
     def update(val):
         time_idx = int(time_slider.val)
-        p_line.set_ydata(solutions_array[time_idx, ::2])
+        pn_line.set_ydata(solutions_array[time_idx, ::2])
+        pw_line.set_ydata(wetting_pressures[time_idx])
         s_line.set_ydata(solutions_array[time_idx, 1::2])
         ax.set_title(f"Two-Phase Flow Solution (Time Step: {time_idx})")
         fig.canvas.draw_idle()
@@ -463,7 +564,7 @@ def plot_solution(solutions):
     plt.show()
 
 
-def plot_curvature(betas, tangents, curvatures, fig=None, ax=None):
+def plot_curvature(betas, tangents, curvatures, fig=None, ax=None, **kwargs):
     """Plot the curvature of the homotopy curve."""
 
     # Convert solutions to numpy array for easier manipulation.
@@ -476,31 +577,153 @@ def plot_curvature(betas, tangents, curvatures, fig=None, ax=None):
         fig, ax = plt.subplots(figsize=(10, 6))
 
     # Plot curvature over time steps.
-    ax.plot(betas_array, curvatures_array, marker="o", label="Curvature")
-    ax.set_xlabel(r"\lambda")
-    ax.set_ylabel(r"\kappa")
-    ax.set_title("Homotopy Curve Curvature Over Time Steps")
+    ax.plot(betas_array, curvatures_array, marker="v", **kwargs)
+    # ax.plot(
+    #     betas_array,
+    #     jnp.linalg.norm(tangents_array, axis=1),
+    #     marker="o",
+    #     label=r"$\tau$",
+    #     color=kwargs.get("color", "tab:orange"),
+    # )
+    ax.set_xlabel(r"$\lambda$")
+    ax.set_ylabel(r"$\kappa$")
+    ax.set_xlim(1, 0)
+    ax.set_yscale("log")
+    ax.set_title("Homotopy Curve Curvature")
     ax.grid(True)
     ax.legend()
-
-    plt.show()
 
     return fig, ax
 
 
-# solutions = solve(TPFModel(), final_time=1.0, n_time_steps=10)
-# plot_solution(solutions)
+# model = TPFModel()
+# solutions = solve(model, final_time=50.0, n_time_steps=100)
+# plot_solution(model, solutions)
 
+# tracer = viztracer.VizTracer(
+#     min_duration=1e3,  # μs
+#     ignore_c_function=True,
+#     ignore_frozen=True,
+# )
+# tracer.start()
+# tracer.stop()
+# tracer.save(str(dirname / "traces.json"))
 
-model_fluxhc = FluxHC()
-model_diffhc = DiffusionHC()
-solve(model_fluxhc, final_time=1.0, n_time_steps=1)
-solve(model_diffhc, final_time=1.0, n_time_steps=1)
-fig, ax = plot_curvature(
-    model_fluxhc.betas, model_fluxhc.tangents, model_fluxhc.curvatures
-)
-plot_curvature(
-    model_diffhc.betas, model_diffhc.tangents, model_diffhc.curvatures, fig=fig, ax=ax
-)
-# solutions = solve(DiffusionHC(), final_time=1.0, n_time_steps=10)
-# plot_solution(solutions)
+for final_time in [10.0, 20.0, 30.0, 40.0, 50.0]:
+    model_fluxhc1 = FluxHC1()
+    model_fluxhc2 = FluxHC2()
+    model_diffhc1 = DiffusionHC(kappa=1.0)
+    model_diffhc2 = DiffusionHC(kappa=3.0)
+    model_diffhc3 = DiffusionHC(kappa=6.0)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for i, model_fluxhc in enumerate([model_fluxhc1, model_fluxhc2], start=1):
+        _, converged = solve(model_fluxhc, final_time=final_time, n_time_steps=1)
+        if converged:
+            #     plot_solution(
+            #         model_fluxhc1, model_fluxhc1.intermediate_solutions, plot_pw=False
+            #     )
+            print(
+                f"Flux HC {i}: Distance between solutions: "
+                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1] - model_fluxhc.intermediate_solutions[0])}"
+            )
+            print(
+                f"Flux HC {i}: Distance between solutions pressure: "
+                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1][::2] - model_fluxhc.intermediate_solutions[0][::2])}"
+            )
+            print(
+                f"Flux HC {i}: Distance between solutions saturation: "
+                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1][1::2] - model_fluxhc.intermediate_solutions[0][1::2])}"
+            )
+            fig, ax = plot_curvature(
+                model_fluxhc.betas,
+                model_fluxhc.tangents,
+                jnp.linalg.norm(jnp.asarray(model_fluxhc.curvature_vectors), axis=-1),
+                fig=fig,
+                ax=ax,
+                label=rf"$\kappa$ (Flux HC {i})",
+                color="tab:green",
+            )
+            fig, ax = plot_curvature(
+                model_fluxhc.betas,
+                model_fluxhc.tangents,
+                jnp.linalg.norm(
+                    jnp.asarray(model_fluxhc.curvature_vectors)[:, ::2], axis=-1
+                ),
+                fig=fig,
+                ax=ax,
+                label=rf"$\kappa_p$ (Flux HC {i})",
+                ls="-.",
+                color="tab:green",
+            )
+            fig, ax = plot_curvature(
+                model_fluxhc.betas,
+                model_fluxhc.tangents,
+                jnp.linalg.norm(
+                    jnp.asarray(model_fluxhc.curvature_vectors)[:, 1::2], axis=-1
+                ),
+                fig=fig,
+                ax=ax,
+                label=rf"$\kappa_s$ (Flux HC {i})",
+                ls="--",
+                color="tab:green",
+            )
+
+    for i, model_diffhc in enumerate(
+        [model_diffhc1, model_diffhc2, model_diffhc3], start=1
+    ):
+        _, converged = solve(model_diffhc, final_time=final_time, n_time_steps=1)
+        if converged:
+            #     plot_solution(model_diffhc, model_diffhc.intermediate_solutions, plot_pw=False)
+            print(
+                f"Diffusion HC {i}: Distance between solutions: "
+                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1] - model_diffhc.intermediate_solutions[0])}"
+            )
+            print(
+                f"Diffusion HC {i}: Distance between solutions pressure: "
+                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1][::2] - model_diffhc.intermediate_solutions[0][::2])}"
+            )
+            print(
+                f"Diffusion HC {i}: Distance between solutions saturation: "
+                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1][1::2] - model_diffhc.intermediate_solutions[0][1::2])}"
+            )
+            fig, ax = plot_curvature(
+                model_diffhc.betas,
+                model_diffhc.tangents,
+                jnp.linalg.norm(jnp.asarray(model_diffhc.curvature_vectors), axis=-1),
+                fig=fig,
+                ax=ax,
+                label=rf"$\kappa$ (Diffusion HC {i})",
+                color="tab:blue",
+            )
+            fig, ax = plot_curvature(
+                model_diffhc.betas,
+                model_diffhc.tangents,
+                jnp.linalg.norm(
+                    jnp.asarray(model_diffhc.curvature_vectors)[:, ::2], axis=-1
+                ),
+                fig=fig,
+                ax=ax,
+                ls="-.",
+                label=rf"$\kappa_p$ (Diffusion HC {i})",
+                color="tab:blue",
+            )
+            fig, ax = plot_curvature(
+                model_diffhc.betas,
+                model_diffhc.tangents,
+                jnp.linalg.norm(
+                    jnp.asarray(model_diffhc.curvature_vectors)[:, 1::2], axis=-1
+                ),
+                fig=fig,
+                ax=ax,
+                ls="--",
+                label=rf"$\kappa_s$ (Diffusion HC {i})",
+                color="tab:blue",
+            )
+
+    fig.savefig(
+        dirname / f"curvature_plot_final_time_{final_time}.png", bbox_inches="tight"
+    )
+
+# TODO Try out different strengths of artifical diffusion.
