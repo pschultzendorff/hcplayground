@@ -29,28 +29,28 @@ import pathlib
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import seaborn as sns
 import tqdm
 import viztracer
 from jax import make_jaxpr
 from matplotlib.widgets import Slider
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 dirname = pathlib.Path(__file__).parent
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+key = jax.random.PRNGKey(0)  # Reproducability.
+
 NUM_CELLS = 50
 
-
-RAND = jax.random.uniform(
-    jax.random.PRNGKey(0), shape=(NUM_CELLS + 1,), minval=-1.0, maxval=2.0
-)
+RAND = jax.random.uniform(key, shape=(NUM_CELLS + 1,), minval=-1.0, maxval=2.0)
 
 TRANSMISSIBILITIES = jnp.pow(10, RAND)
 TRANSMISSIBILITIES = TRANSMISSIBILITIES.at[0].set(0.0)
 TRANSMISSIBILITIES = TRANSMISSIBILITIES.at[-1].set(TRANSMISSIBILITIES[-1] * 2)
 # Transmissibility at the Dirichlet boundary has to be doubled.
 # Transmissibility at the Neumann boundary hast to be set to 0.
-
 
 POROSITIES = (RAND + 2.5) / 5.0  # Scale to [0.1, 0.5] range.
 POROSITIES = POROSITIES[1:]  # Porosities are cellwise, not facewise.
@@ -253,31 +253,34 @@ def newton(model, x_init, x_prev, dt, max_iter=50, tol=1e-4):
         max_iter, desc="Newton iterations", position=0, leave=False
     )
 
-    for i in newton_progressbar:
-        r = model.residual(x, dt=dt, x_prev=x_prev)
-        newton_progressbar.set_postfix(
-            {"residual_norm": jnp.linalg.norm(r) / jnp.sqrt(len(r))}
-        )
-
-        if jnp.linalg.norm(r) / jnp.sqrt(len(r)) < tol:
-            converged = True
-            break
-
-        J = model.jacobian(x, dt=dt, x_prev=x_prev)
-        model.linear_system = (J, r)
-
-        dx = jnp.linalg.solve(J, -r)
-        if jnp.isnan(dx).any() or jnp.isinf(dx).any():
-            print(
-                make_jaxpr(jax.jacrev(model.residual, argnums=0))(x, dt, x_prev=x_prev)
+    with logging_redirect_tqdm([logger]):
+        for i in newton_progressbar:
+            r = model.residual(x, dt=dt, x_prev=x_prev)
+            newton_progressbar.set_postfix(
+                {"residual_norm": jnp.linalg.norm(r) / jnp.sqrt(len(r))}
             )
-            raise RuntimeError("Newton step resulted in NaN or Inf values.")
-        x += dx
 
-        # Ensure physical saturation values plus small epsilon to avoid
-        p = x[::2]
-        s = jnp.clip(x[1::2], 0.0001, 1.0)
-        x = jnp.stack([p, s], axis=1).flatten()
+            if jnp.linalg.norm(r) / jnp.sqrt(len(r)) < tol:
+                converged = True
+                break
+
+            J = model.jacobian(x, dt=dt, x_prev=x_prev)
+            model.linear_system = (J, r)
+
+            dx = jnp.linalg.solve(J, -r)
+            if jnp.isnan(dx).any() or jnp.isinf(dx).any():
+                print(
+                    make_jaxpr(jax.jacrev(model.residual, argnums=0))(
+                        x, dt, x_prev=x_prev
+                    )
+                )
+                raise RuntimeError("Newton step resulted in NaN or Inf values.")
+            x += dx
+
+            # Ensure physical saturation values plus small epsilon to avoid numerical issues.
+            p = x[::2]
+            s = jnp.clip(x[1::2], 1e-5, 1 - 1e-5)
+            x = jnp.stack([p, s], axis=1).flatten()
 
     return x, converged
 
@@ -304,24 +307,30 @@ def hc(
         max_iter, desc="Homotopy continuation", position=1, leave=False
     )
 
-    for i in hc_progressbar:
-        hc_progressbar.set_postfix({r"$\lambda$": model.beta})
+    with logging_redirect_tqdm([logger]):
+        for i in hc_progressbar:
+            hc_progressbar.set_postfix({r"$\lambda$": model.beta})
 
-        # Previous solution for the predictor step. Newton's method for the corrector
-        # step.
-        x, converged = newton(
-            model, x, x_prev, max_iter=max_newton_iter, tol=newton_tol, dt=dt
-        )
+            # Previous solution for the predictor step. Newton's method for the corrector
+            # step.
+            x, converged = newton(
+                model, x, x_prev, max_iter=max_newton_iter, tol=newton_tol, dt=dt
+            )
 
-        if not converged:
-            break
+            if not converged:
+                print(
+                    f"Model {model.__class__.__name__} did not converge at continuation"
+                    + f" step {i + 1}, lambda={model.beta}."
+                )
 
-        # Store data for the homotopy curve BEFORE updating beta.
-        model.store_curve_data(x, dt, x_prev=x_prev)
-        model.store_intermediate_solutions(x)
+                break
 
-        # Update the homotopy parameter beta only now.
-        model.beta -= decay
+            # Store data for the homotopy curve BEFORE updating beta.
+            model.store_curve_data(x, dt, x_prev=x_prev)
+            model.store_intermediate_solutions(x)
+
+            # Update the homotopy parameter beta only now.
+            model.beta -= decay
 
     return x, converged
 
@@ -338,25 +347,29 @@ def solve(model, final_time, n_time_steps):
 
     solver = newton if not hasattr(model, "beta") else hc
 
-    for i in time_progressbar:
-        time_progressbar.set_postfix({"time_step": i + 1})
+    with logging_redirect_tqdm([logger]):
+        for i in time_progressbar:
+            time_progressbar.set_postfix({"time_step": i + 1})
 
-        # Solve the nonlinear problem at the current time step.
-        x_prev = solutions[-1]
-        # Use the previous time step solution as the initial guess for the solver.
-        (
-            x_next,
-            converged,
-        ) = solver(model, x_prev, x_prev, dt=dt)
+            # Solve the nonlinear problem at the current time step.
+            x_prev = solutions[-1]
+            # Use the previous time step solution as the initial guess for the solver.
+            try:
+                (
+                    x_next,
+                    converged,
+                ) = solver(model, x_prev, x_prev, dt=dt)
+            except RuntimeError as _:
+                converged = False
+                break
 
-        if converged:
-            solutions.append(x_next)
-
-        else:
-            print(
-                f"Model {model.__class__.__name__} did not converge at time step {i + 1}."
-            )
-            break
+            if converged:
+                solutions.append(x_next)
+            else:
+                print(
+                    f"Model {model.__class__.__name__} did not converge at time step {i + 1}."
+                )
+                break
 
     return solutions, converged
 
@@ -564,36 +577,39 @@ def plot_solution(model, solutions, plot_pw=False):
     plt.show()
 
 
-def plot_curvature(betas, tangents, curvatures, fig=None, ax=None, **kwargs):
+def plot_curvature(betas, curvatures=None, distances=None, fig=None, **kwargs):
     """Plot the curvature of the homotopy curve."""
-
-    # Convert solutions to numpy array for easier manipulation.
-    betas_array = jnp.array(betas)
-    tangents_array = jnp.array(tangents)
-    curvatures_array = jnp.array(curvatures)
+    betas_array = jnp.asarray(betas)
 
     # Create figure and axis.
-    if fig is None or ax is None:
-        fig, ax = plt.subplots(figsize=(10, 6))
+    if fig is None:
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        ax2 = ax1.twinx()
+    else:
+        ax1, ax2 = fig.axes
 
-    # Plot curvature over time steps.
-    ax.plot(betas_array, curvatures_array, marker="v", **kwargs)
-    # ax.plot(
-    #     betas_array,
-    #     jnp.linalg.norm(tangents_array, axis=1),
-    #     marker="o",
-    #     label=r"$\tau$",
-    #     color=kwargs.get("color", "tab:orange"),
-    # )
-    ax.set_xlabel(r"$\lambda$")
-    ax.set_ylabel(r"$\kappa$")
-    ax.set_xlim(1, 0)
-    ax.set_yscale("log")
-    ax.set_title("Homotopy Curve Curvature")
-    ax.grid(True)
-    ax.legend()
+    # Plot curvature and distance over \lambda range.
+    if curvatures is not None:
+        curvatures_array = jnp.asarray(curvatures)
+        ax1.plot(betas_array, curvatures_array, **kwargs)
+    if distances is not None:
+        distances = jnp.asarray(distances)
+        ax2.plot(betas_array, distances, **kwargs)
 
-    return fig, ax
+    ax1.set_xlabel(r"$\lambda$")
+    ax1.set_ylabel(r"$\kappa$")
+    ax2.set_ylabel(
+        r"$\frac{\|\mathbf{x}_{\lambda=0} - \mathbf{x}_{\lambda=1}\|}{\|\mathbf{x}_{\lambda=0}\|}$"
+    )
+    ax1.set_xlim(1, 0)
+    ax1.set_yscale("log")
+    ax2.set_yscale("log")
+    ax1.set_title("Homotopy Curve Curvature and Distance to Solution")
+    ax1.grid(True)
+    ax1.legend()
+    ax2.legend()
+
+    return fig
 
 
 # model = TPFModel()
@@ -617,113 +633,144 @@ for final_time in [10.0, 20.0, 30.0, 40.0, 50.0]:
     model_diffhc3 = DiffusionHC(kappa=6.0)
 
     fig, ax = plt.subplots(figsize=(10, 6))
+    ax2 = ax.twinx()
 
-    for i, model_fluxhc in enumerate([model_fluxhc1, model_fluxhc2], start=1):
+    color_palette_fluxhc = sns.color_palette("rocket", 2)
+    color_palette_diffhc = sns.color_palette("mako", 3)
+
+    for i, (model_fluxhc, color) in enumerate(
+        zip([model_fluxhc1, model_fluxhc2], color_palette_fluxhc), start=1
+    ):
         _, converged = solve(model_fluxhc, final_time=final_time, n_time_steps=1)
         if converged:
             #     plot_solution(
             #         model_fluxhc1, model_fluxhc1.intermediate_solutions, plot_pw=False
             #     )
             print(
-                f"Flux HC {i}: Distance between solutions: "
-                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1] - model_fluxhc.intermediate_solutions[0])}"
+                f"Flux HC {i}: Relative distance between solutions:"
+                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1] - model_fluxhc.intermediate_solutions[0]) / jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1])}"
             )
             print(
-                f"Flux HC {i}: Distance between solutions pressure: "
-                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1][::2] - model_fluxhc.intermediate_solutions[0][::2])}"
+                f"Flux HC {i}: Relative distance between pressure solutions:"
+                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1][::2] - model_fluxhc.intermediate_solutions[0][::2]) / jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1][::2])}"
             )
             print(
-                f"Flux HC {i}: Distance between solutions saturation: "
-                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1][1::2] - model_fluxhc.intermediate_solutions[0][1::2])}"
+                f"Flux HC {i}: Relative distance between saturation solutions:"
+                + f" {jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1][1::2] - model_fluxhc.intermediate_solutions[0][1::2]) / jnp.linalg.norm(model_fluxhc.intermediate_solutions[-1][1::2])}"
             )
-            fig, ax = plot_curvature(
+            fig = plot_curvature(
                 model_fluxhc.betas,
-                model_fluxhc.tangents,
-                jnp.linalg.norm(jnp.asarray(model_fluxhc.curvature_vectors), axis=-1),
+                curvatures=jnp.linalg.norm(
+                    jnp.asarray(model_fluxhc.curvature_vectors), axis=-1
+                ),
                 fig=fig,
-                ax=ax,
                 label=rf"$\kappa$ (Flux HC {i})",
-                color="tab:green",
+                color=color,
+                marker="o",
             )
-            fig, ax = plot_curvature(
+            fig = plot_curvature(
                 model_fluxhc.betas,
-                model_fluxhc.tangents,
-                jnp.linalg.norm(
+                curvatures=jnp.linalg.norm(
                     jnp.asarray(model_fluxhc.curvature_vectors)[:, ::2], axis=-1
                 ),
                 fig=fig,
-                ax=ax,
                 label=rf"$\kappa_p$ (Flux HC {i})",
-                ls="-.",
-                color="tab:green",
+                color=color,
+                ls="--",
+                marker="v",
             )
-            fig, ax = plot_curvature(
+            fig = plot_curvature(
                 model_fluxhc.betas,
-                model_fluxhc.tangents,
-                jnp.linalg.norm(
+                curvatures=jnp.linalg.norm(
                     jnp.asarray(model_fluxhc.curvature_vectors)[:, 1::2], axis=-1
                 ),
                 fig=fig,
-                ax=ax,
                 label=rf"$\kappa_s$ (Flux HC {i})",
-                ls="--",
-                color="tab:green",
+                color=color,
+                ls="-.",
+                marker="x",
+            )
+            intermediate_solutions = jnp.asarray(model_fluxhc.intermediate_solutions)
+            distances = jnp.linalg.norm(
+                intermediate_solutions[:-1] - intermediate_solutions[-1][None, ...],
+                axis=-1,
+            ) / jnp.linalg.norm(intermediate_solutions[-1])
+            fig = plot_curvature(
+                model_fluxhc.betas[:-1],
+                distances=distances,
+                fig=fig,
+                label=rf"$\frac{{\|\mathbf{{x}}_{{\lambda=0}} - \mathbf{{x}}_{{\lambda=1}}\|}}{{\|\mathbf{{x}}_{{\lambda=0}}\|}}$ (Flux HC {i})",
+                color=color,
+                ls=":",
+                marker="^",
             )
 
-    for i, model_diffhc in enumerate(
-        [model_diffhc1, model_diffhc2, model_diffhc3], start=1
+    for i, (model_diffhc, color) in enumerate(
+        zip([model_diffhc1, model_diffhc2, model_diffhc3], color_palette_diffhc),
+        start=1,
     ):
         _, converged = solve(model_diffhc, final_time=final_time, n_time_steps=1)
         if converged:
             #     plot_solution(model_diffhc, model_diffhc.intermediate_solutions, plot_pw=False)
             print(
-                f"Diffusion HC {i}: Distance between solutions: "
-                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1] - model_diffhc.intermediate_solutions[0])}"
+                f"Diffusion HC {i}: Relative distance between solutions:"
+                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1] - model_diffhc.intermediate_solutions[0]) / jnp.linalg.norm(model_diffhc.intermediate_solutions[-1])}"
             )
             print(
-                f"Diffusion HC {i}: Distance between solutions pressure: "
-                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1][::2] - model_diffhc.intermediate_solutions[0][::2])}"
+                f"Diffusion HC {i}: Relative distance between pressure solutions:"
+                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1][::2] - model_diffhc.intermediate_solutions[0][::2]) / jnp.linalg.norm(model_diffhc.intermediate_solutions[-1][::2])}"
             )
             print(
-                f"Diffusion HC {i}: Distance between solutions saturation: "
-                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1][1::2] - model_diffhc.intermediate_solutions[0][1::2])}"
+                f"Diffusion HC {i}: Relative distance between saturation solutions:"
+                + f" {jnp.linalg.norm(model_diffhc.intermediate_solutions[-1][1::2] - model_diffhc.intermediate_solutions[0][1::2]) / jnp.linalg.norm(model_diffhc.intermediate_solutions[-1][1::2])}"
             )
-            fig, ax = plot_curvature(
+            fig = plot_curvature(
                 model_diffhc.betas,
-                model_diffhc.tangents,
-                jnp.linalg.norm(jnp.asarray(model_diffhc.curvature_vectors), axis=-1),
+                curvatures=jnp.linalg.norm(
+                    jnp.asarray(model_diffhc.curvature_vectors), axis=-1
+                ),
                 fig=fig,
-                ax=ax,
                 label=rf"$\kappa$ (Diffusion HC {i})",
                 color="tab:blue",
+                marker="o",
             )
-            fig, ax = plot_curvature(
+            fig = plot_curvature(
                 model_diffhc.betas,
-                model_diffhc.tangents,
-                jnp.linalg.norm(
+                curvatures=jnp.linalg.norm(
                     jnp.asarray(model_diffhc.curvature_vectors)[:, ::2], axis=-1
                 ),
                 fig=fig,
-                ax=ax,
-                ls="-.",
                 label=rf"$\kappa_p$ (Diffusion HC {i})",
                 color="tab:blue",
+                ls="--",
+                marker="v",
             )
-            fig, ax = plot_curvature(
+            fig = plot_curvature(
                 model_diffhc.betas,
-                model_diffhc.tangents,
-                jnp.linalg.norm(
+                curvatures=jnp.linalg.norm(
                     jnp.asarray(model_diffhc.curvature_vectors)[:, 1::2], axis=-1
                 ),
                 fig=fig,
-                ax=ax,
-                ls="--",
                 label=rf"$\kappa_s$ (Diffusion HC {i})",
                 color="tab:blue",
+                ls="-.",
+                marker="x",
+            )
+            intermediate_solutions = jnp.asarray(model_diffhc.intermediate_solutions)
+            distances = jnp.linalg.norm(
+                intermediate_solutions[:-1] - intermediate_solutions[-1][None, ...],
+                axis=-1,
+            ) / jnp.linalg.norm(intermediate_solutions[-1])
+            fig = plot_curvature(
+                model_fluxhc.betas[:-1],
+                distances=distances,
+                fig=fig,
+                label=rf"$\frac{{\|\mathbf{{x}}_{{\lambda=0}} - \mathbf{{x}}_{{\lambda=1}}\|}}{{\|\mathbf{{x}}_{{\lambda=0}}\|}}$ (Flux HC {i})",
+                color=color,
+                ls=":",
+                marker="^",
             )
 
     fig.savefig(
         dirname / f"curvature_plot_final_time_{final_time}.png", bbox_inches="tight"
     )
-
-# TODO Try out different strengths of artifical diffusion.
