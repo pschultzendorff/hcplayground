@@ -40,7 +40,7 @@ logger.setLevel(logging.INFO)
 
 key = jax.random.PRNGKey(0)  # Reproducability.
 
-NUM_CELLS = 30
+NUM_CELLS = 2
 
 RAND = jax.random.uniform(key, shape=(NUM_CELLS + 1,), minval=-1.0, maxval=2.0)
 
@@ -310,7 +310,7 @@ def hc(
     decay=1 / 30,
     max_iter=31,
     max_newton_iter=100,
-    newton_tol=1e-4,
+    newton_tol=3e-5,
 ):
     """Solve the system using homotopy continuation with Newton"s method."""
     assert hasattr(model, "beta"), (
@@ -358,7 +358,7 @@ def hc(
     return x, converged
 
 
-def solve(model, final_time, n_time_steps, **kwargs):
+def solve(model, final_time, n_time_steps):
     """Solve the two-phase flow problem over a given time period."""
     dt = final_time / n_time_steps
     solutions = [model.initial_conditions]
@@ -381,7 +381,7 @@ def solve(model, final_time, n_time_steps, **kwargs):
                 (
                     x_next,
                     converged,
-                ) = solver(model, x_prev, x_prev, dt=dt, **kwargs)
+                ) = solver(model, x_prev, x_prev, dt=dt)
             except RuntimeError as _:
                 converged = False
 
@@ -785,13 +785,19 @@ def plot_curvature(betas, curvatures=None, distances=None, fig=None, **kwargs):
     return fig
 
 
-# model = TPFModel(p_e=2.0)
-# solutions, _ = solve(model, final_time=10.0, n_time_steps=100)
+# model = TPFModel(p_e=0.2)
+# solutions, _ = solve(model, final_time=1.0, n_time_steps=10)
 # plot_solution(model, solutions)
 
-model = TPFModel(p_e=30.0)
-solutions, _ = solve(model, final_time=10.0, n_time_steps=100, tol=5e-5)
-plot_solution(model, solutions, plot_pw=True)
+# model = TPFModel(p_e=2.0)
+# solutions, _ = solve(model, final_time=1.0, n_time_steps=10)
+# plot_solution(model, solutions, plot_pw=True)
+
+# model = TPFModel(p_e=2.0)
+# solutions, _ = solve(model, final_time=0.5, n_time_steps=1)
+# # plot_solution(model, solutions, plot_pw=True)
+
+# solutions_a = solutions.copy()
 
 # tracer = viztracer.VizTracer(
 #     min_duration=1e3,  # μs
@@ -802,8 +808,8 @@ plot_solution(model, solutions, plot_pw=True)
 # tracer.stop()
 # tracer.save(str(dirname / "traces.json"))
 
-for p_e in [0.05, 2.0, 10.0]:
-    continue
+for p_e in [0.05, 0.2, 2.0]:
+    # for p_e in [0.05, 2.0, 10.0]:
     model_fluxhc1 = FluxHC1(p_e=p_e)
     model_fluxhc2 = FluxHC2(p_e=p_e)
     model_fluxhc3 = FluxHC3(p_e=p_e)
@@ -811,9 +817,8 @@ for p_e in [0.05, 2.0, 10.0]:
     model_diffhc1 = DiffusionHC(p_e=p_e, kappa=0.01)
     model_diffhc2 = DiffusionHC(p_e=p_e, kappa=0.1)
     model_diffhc3 = DiffusionHC(p_e=p_e, kappa=1.0)
-    model_diffhc4 = DiffusionHC(p_e=p_e, kappa=10.0)
 
-    for final_time in [0.5, 1.0, 10.0, 50.0]:
+    for final_time in [0.5, 1.0, 10.0]:
         fig, ax = plt.subplots(figsize=(10, 6))
         ax2 = ax.twinx()
 
@@ -896,7 +901,7 @@ for p_e in [0.05, 2.0, 10.0]:
                 )
         try:
             fig.savefig(
-                dirname / f"curvature_flux_hc_T_{final_time}_pe_{p_e}.png",
+                dirname / f"curvature_small_flux_hc_T_{final_time}_pe_{p_e}.png",
                 bbox_inches="tight",
             )
         except Exception as _:
@@ -909,12 +914,6 @@ for p_e in [0.05, 2.0, 10.0]:
             zip([model_diffhc1, model_diffhc2, model_diffhc3], color_palette_diffhc),
             start=1,
         ):
-            if final_time == 10.0 or final_time == 50.0:
-                model_diffhc = model_diffhc4
-                if i > 1:
-                    break
-                i = 4
-
             model_diffhc.reset()
             _, converged = solve(model_diffhc, final_time=final_time, n_time_steps=1)
             if converged:
@@ -985,7 +984,7 @@ for p_e in [0.05, 2.0, 10.0]:
 
         try:
             fig.savefig(
-                dirname / f"curvature_diff_hc_T_{final_time}_pe_{p_e}.png",
+                dirname / f"curvature_small_diff_hc_T_{final_time}_pe_{p_e}.png",
                 bbox_inches="tight",
             )
         except Exception as _:

@@ -73,7 +73,9 @@ DIR_BC = jnp.array(
 INITIAL_CONDITIONS = jnp.stack(
     [
         jnp.zeros((NUM_CELLS,)),
-        jnp.full((NUM_CELLS,), 0.98),
+        jnp.concatenate(
+            [jnp.full((NUM_CELLS // 2,), 0.02), jnp.full((NUM_CELLS // 2,), 0.98)]
+        ),
     ],
     axis=1,
 ).flatten()  # Initial conditions for pressure and saturation at cell centers.
@@ -789,8 +791,8 @@ def plot_curvature(betas, curvatures=None, distances=None, fig=None, **kwargs):
 # solutions, _ = solve(model, final_time=10.0, n_time_steps=100)
 # plot_solution(model, solutions)
 
-model = TPFModel(p_e=30.0)
-solutions, _ = solve(model, final_time=10.0, n_time_steps=100, tol=5e-5)
+model = TPFModel(p_e=10.0)
+solutions, _ = solve(model, final_time=10.0, n_time_steps=100, tol=1e-4)
 plot_solution(model, solutions, plot_pw=True)
 
 # tracer = viztracer.VizTracer(
@@ -813,7 +815,7 @@ for p_e in [0.05, 2.0, 10.0]:
     model_diffhc3 = DiffusionHC(p_e=p_e, kappa=1.0)
     model_diffhc4 = DiffusionHC(p_e=p_e, kappa=10.0)
 
-    for final_time in [0.5, 1.0, 10.0, 50.0]:
+    for final_time in [0.5, 1.0, 10.0]:
         fig, ax = plt.subplots(figsize=(10, 6))
         ax2 = ax.twinx()
 
@@ -896,7 +898,7 @@ for p_e in [0.05, 2.0, 10.0]:
                 )
         try:
             fig.savefig(
-                dirname / f"curvature_flux_hc_T_{final_time}_pe_{p_e}.png",
+                dirname / f"curvature_2_flux_hc_T_{final_time}_pe_{p_e}.png",
                 bbox_inches="tight",
             )
         except Exception as _:
@@ -985,7 +987,7 @@ for p_e in [0.05, 2.0, 10.0]:
 
         try:
             fig.savefig(
-                dirname / f"curvature_diff_hc_T_{final_time}_pe_{p_e}.png",
+                dirname / f"curvature_2_diff_hc_T_{final_time}_pe_{p_e}.png",
                 bbox_inches="tight",
             )
         except Exception as _:
