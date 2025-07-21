@@ -47,7 +47,7 @@ def interactive_homotopy_curvature_plot():
             self.a1 = a1
             self.a0 = a0
             # Coefficients for the polynomial g(x).
-            self.b2 = 1.0
+            self.b2 = 0.0
             self.b1 = 0.0
             self.b0 = -20.0
             # Initial guess for the root-finding algorithm.
