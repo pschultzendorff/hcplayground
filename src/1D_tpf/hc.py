@@ -3,6 +3,10 @@ r"""Homotopy continuation models and evaluation functions for 1D two-phase flow 
 Note: Throughout the module, the homotopy parameter variable is denoted as `beta`, while
     in the docstrings it is referred to as $\lambda$, as is common in the literature.
 
+For more information on curvatures, see
+Brown, D.A. and Zingg, D.W. (2016) ‘Efficient numerical differentiation of
+implicitly-defined curves for sparse systems’, Journal of Computational and Applied
+Mathematics, 304, pp. 138–159. Available at: https://doi.org/10.1016/j.cam.2016.03.002.
 
 """
 
@@ -142,7 +146,18 @@ def solve(model, final_time, n_time_steps, **kwargs):
 
 
 class HCModel(TPFModel):
-    """Base class for homotopy continuation models."""
+    r"""Base class for homotopy continuation models.
+
+    Note: For computing the tangent and curvature, it would be a cleaner implementation
+    to define two residual functions, `residual_initial` and `residual_target`, and
+    compute Jacobian and Hessian for both of them. However, this would require
+    duplicating the code for the residuals for all concrete homotopies.
+
+    Instead, we leave the concrete implementation of the homotopy to the subclasses and
+    compute tangent and curvatures by temporarily shifting :math:`\lambda` to 0 and 1,
+    respectively.
+
+    """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -186,20 +201,57 @@ class HCModel(TPFModel):
         return r_g - r_f
 
     def tangent(self, x, dt, x_prev=None, jac=None):
-        r"""Compute the tangent vector of the homotopy curve at :math:`(\mathbf{x}, \lambda)`."""
+        r"""Compute the tangent vector of the homotopy curve at :math:`(\mathbf{x},
+         \lambda)`.
+
+        Note: The full tangent vector includes the derivative :math:`\lambda' = -1`,
+        which is **not** included by this method. :meth:`curvature_vector` concatenates
+        :math:`\mathbf{x}'` with :math:`-1` to form the full tangent vector.
+
+        """
         b = self.h_beta_deriv(x, dt, x_prev=x_prev)
         A = self.jacobian(x, dt, x_prev=x_prev) if jac is None else jac
         tangent = jnp.linalg.solve(A, b)
         return tangent
 
-    def curvature_vector(self, x, dt, x_prev=None, jac=None, tangent=None):
+    def curvature_vector(self, x, dt, x_prev=None, jac=None, tangent_star=None):
+        # First, we compute the Hessian w.r.t. to :math:`\mathbf{x}` and apply it to the
+        # corresponding tangent vector :math:`\mathbf{x}'`.
         if jac is None:
             jac = self.jacobian(x, dt, x_prev=x_prev)
-        if tangent is None:
-            tangent = self.tangent(x, dt, x_prev=x_prev, jac=jac)
+        if tangent_star is None:
+            tangent_star = self.tangent(x, dt, x_prev=x_prev, jac=jac)
+
         # Compute the Hessian of the residual.
-        H = self.per_component_hessian(x, dt, x_prev=x_prev)
-        w2 = apply_hessian(H, tangent, tangent)
+        H_star = self.per_component_hessian(x, dt, x_prev=x_prev)
+        w2_star = apply_hessian(H_star, tangent_star, tangent_star)
+
+        # The above Hessian is a tensor of shape (n, n, n), where n is the number of
+        # components of the residual. However, the full Hessian of :math:`\mathcal{H}`
+        # is a tensor of shape (n + 1, n + 1, n), where the last dimension corresponds
+        # to the partial derivatives w.r.t. :math:`\lambda`.
+        # To compute the missing components of the Hessian, we note that
+        # :math:`\partial_{\mathbf{x}_j}\partial_{\lambda}\mathcal{H} =
+        # \partial_{\mathbf{x}_j}\mathcal{R}_G - \partial_{\mathbf{x}_j}\mathcal{R}_F`
+        # and :math:`\partial_{\lambda}^2 \mathcal{H} = 0`.
+        beta_save = self.beta
+        self.beta = 1.0
+        jac_g = self.jacobian(x, dt, x_prev=x_prev)
+        self.beta = 0.0
+        jac_f = self.jacobian(x, dt, x_prev=x_prev)
+        self.beta = beta_save
+
+        # Since :math:`\lambda` decreases, we know that :math:`\lambda' = -1` (w.r.t. to
+        # an auxiliary parameter :math:`r`).
+        # The missing components of the Hessian applied to the tangent vector are
+        # :math:`\partial_{\mathbf{x}_j}\partial_{\lambda}\mathcal{H}_i \cdot \tau_j
+        # \cdot -1`,
+        # :math:`\partial_{\lambda}\partial_{\mathbf{x}_j} \mathcal{H}_i \cdot -1 \cdot
+        # \tau_j`,
+        # and :math:`\partial_{\lambda}^2 \mathcal{H}_i \cdot -1 \cdot -1 = 0`.
+        # The first two terms are equal.
+        w2 = w2_star - 2 * (jac_g - jac_f) @ tangent_star
+
         curvature_vector = jnp.linalg.solve(jac, -w2)
         return curvature_vector
 
@@ -215,7 +267,7 @@ class HCModel(TPFModel):
                 dt,
                 x_prev=x_prev,
                 jac=self.linear_system[0],  # type: ignore
-                tangent=self.tangents[-1],
+                tangent_star=self.tangents[-1],
             )
         )
 
