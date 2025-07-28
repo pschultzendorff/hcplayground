@@ -10,7 +10,7 @@ class FluxNN(nn.Module):
 
     def __init__(self, input_dim, hidden_dim):
         super(FluxNN, self).__init__()
-        self.input_dim = input_dim  # 2 saturations, 2 pressures, 2 permeabilities, 2 distances, entry pressure
+        self.input_dim = input_dim  # 2 saturations, 2 pressures
         self.hidden_dim = hidden_dim
         self.output_dim = 2
 
@@ -39,3 +39,61 @@ class ConvexLoss(nn.Module):
         # Assuming output and target are of shape (batch_size, output_dim)
         loss = torch.mean((output - target) ** 2)
         return loss
+
+
+class DistanceLoss(nn.Module):
+    """Distance loss function to ensure that the network outputs are close to the
+    target values."""
+
+    def __init__(self):
+        super(DistanceLoss, self).__init__()
+
+    def forward(self, output, target):
+        """Compute the distance loss."""
+        # Assuming output and target are of shape (batch_size, output_dim)
+        loss = torch.mean(torch.abs(output - target))
+        return loss
+
+
+class CombinedLoss(nn.Module):
+    """Combined loss function that includes both convex and distance losses."""
+
+    def __init__(self, alpha=1.0, beta=1.0):
+        super(CombinedLoss, self).__init__()
+        self.convex_loss = ConvexLoss()
+        self.distance_loss = DistanceLoss()
+        self.alpha = alpha
+        self.beta = beta
+
+    def forward(self, output, target):
+        """Compute the combined loss."""
+        convex_loss_value = self.convex_loss(output, target)
+        distance_loss_value = self.distance_loss(output, target)
+        return self.alpha * convex_loss_value + self.beta * distance_loss_value
+
+
+class BrooksCoreyWettingFlux(nn.Module):
+    """Target wetting flux function."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.mu_w = kwargs["mu_w"]
+        self.mu_n = kwargs["mu_n"]
+
+        self.nb = kwargs.get("nb", 2)
+        self.p_e = kwargs.get("p_e", 5.0)
+        self.n1 = kwargs.get("n1", 2)
+        self.n2 = kwargs.get("n2", 1 + 2 / self.nb)
+        self.n3 = kwargs.get("n3", 1)
+
+    def mobility_w(self, s):
+        """Mobility function for water."""
+        return s ** (self.n1 + self.n2 * self.n3) / self.mu_w
+
+    def mobility_n(self, s):
+        """Mobility function for non-aqueous phase."""
+        return (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3 / self.mu_n
+
+    def forward(self, x):
+        """Forward pass through the neural network."""
+        return self(x)

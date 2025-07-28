@@ -41,9 +41,11 @@ def smooth_heaviside(x, k=20.0):
 class TPFModel:
     def __init__(self, **kwargs) -> None:
         self.num_cells = kwargs["num_cells"]
-        self.transmissibilities = kwargs["transmissibilities"]
+        self.domain_size = kwargs.get("domain_size", 1.0)
+        self.permeabilities = kwargs["permeabilities"]
         self.porosities = kwargs["porosities"]
         self.source_terms = kwargs["source_terms"]
+        self.bc = kwargs["bc"]
         self.neumann_bc = kwargs["neumann_bc"]
         self.dirichlet_bc = kwargs["dirichlet_bc"]
         self.initial_conditions = kwargs["initial_conditions"]
@@ -59,6 +61,37 @@ class TPFModel:
         self.linear_system = (
             None  # Placeholder for the linear system (Jacobian, residual).
         )
+
+        self.initialize_transmissibilities()
+
+    def initialize_transmissibilities(self):
+        # Harmonic average of half-transmissibilities gives the cell faces
+        # transmissibilities.
+        half_transmissibilities = (
+            self.domain_size / (self.num_cells * 2) * self.permeabilities
+        )
+        assert (half_transmissibilities > 0).all(), "Permeabilities must be positive."
+        half_transmissibilities_inverse = jnp.pow(half_transmissibilities, -1)
+        self.transmissibilities = jnp.pow(
+            half_transmissibilities_inverse[1:] + half_transmissibilities_inverse[:-1],
+            -1,
+        )
+
+        # Double transmissibilities at Dirichlet boundaries.
+        if self.bc[0] == "dirichlet":
+            self.transmissibilities = jnp.insert(
+                self.transmissibilities, 0, self.transmissibilities[0] * 2
+            )
+        if self.bc[1] == "dirichlet":
+            self.transmissibilities = jnp.append(
+                self.transmissibilities, self.transmissibilities[-1] * 2
+            )
+
+        # Null transmissibilities at Neumann boundaries.
+        if self.bc[0] == "neumann":
+            self.transmissibilities = jnp.insert(self.transmissibilities, 0, 0.0)
+        if self.bc[1] == "neumann":
+            self.transmissibilities = jnp.append(self.transmissibilities, 0.0)
 
     def pc(self, s):
         """Capillary pressure function. Brooks-Corey model.
@@ -78,20 +111,22 @@ class TPFModel:
 
     def mobility_w(self, s):
         """Mobility of the wetting phase. Brooks-Corey model."""
-        k_w = jnp.where(
-            s <= 1,
-            jnp.where(s >= 0, s ** (self.n1 + self.n2 * self.n3), 0.0),  # type: ignore
-            1.0,
-        )
+        # k_w = jnp.where(
+        #     s <= 1,
+        #     jnp.where(s >= 0, s ** (self.n1 + self.n2 * self.n3), 0.0),  # type: ignore
+        #     1.0,
+        # )
+        k_w = jnp.where(s >= 0, s ** (self.n1 + self.n2 * self.n3), 0.0)
         return k_w / self.mu_w  # type: ignore
 
     def mobility_n(self, s):
         """Mobility of the nonwetting phase. Brooks-Corey model."""
-        k_n = jnp.where(
-            s >= 0,
-            jnp.where(s <= 1, (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3, 0.0),  # type: ignore
-            1.0,
-        )
+        # k_n = jnp.where(
+        #     s >= 0,
+        #     jnp.where(s <= 1, (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3, 0.0),  # type: ignore
+        #     1.0,
+        # )
+        k_n = jnp.where(s <= 1, (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3, 0.0)
         return k_n / self.mu_n  # type: ignore
 
     def compute_face_fluxes(self, p, s):
@@ -129,7 +164,7 @@ class TPFModel:
         # boundaries are upwinded as well. This is not a problem, because the
         # transmissibilities are set to 0 at the Neumann boundary.
         m_w = jnp.where(
-            p_n_gradient >= 0, self.mobility_w(s[:-1]), self.mobility_w(s[1:])
+            p_n_gradient > 0, self.mobility_w(s[:-1]), self.mobility_w(s[1:])
         )
         m_n = jnp.where(
             p_n_gradient - p_c_gradient >= 0,
@@ -149,10 +184,12 @@ class TPFModel:
         )
 
         # Add Neumann boundary conditions.
-        F_t = F_t.at[0].add(self.neumann_bc[0, 0])
-        F_w = F_w.at[0].add(self.neumann_bc[0, 1])
-        F_t = F_t.at[-1].add(self.neumann_bc[1, 0])
-        F_w = F_w.at[-1].add(self.neumann_bc[1, 1])
+        if self.bc[0] == "neumann":
+            F_t = F_t.at[0].set(self.neumann_bc[0, 0])
+            F_w = F_w.at[0].set(self.neumann_bc[0, 1])
+        if self.bc[1] == "neumann":
+            F_t = F_t.at[-1].set(self.neumann_bc[1, 0])
+            F_w = F_w.at[-1].set(self.neumann_bc[1, 1])
 
         return F_t, F_w
 
@@ -183,12 +220,10 @@ class TPFModel:
 
     def jacobian(self, x, dt, x_prev=None):
         """Compute the Jacobian of the system at (x, beta)."""
-        J = jax.jacrev(self.residual, argnums=0)(x, dt, x_prev=x_prev)
-        # jax.make_jaxpr(jax.jacrev(self.residual, argnums=0))(x, dt, x_prev=x_prev)
-        return J.reshape(-1, len(x))
+        return jax.jacrev(self.residual, argnums=0)(x, dt, x_prev=x_prev)
 
 
-def newton(model, x_init, x_prev, dt, max_iter=100, tol=1e-6):
+def newton(model, x_init, x_prev, dt, max_iter=100, tol=5e-6, appleyard=False):
     """Solve the system using Newton"s method."""
     x = x_init.copy()
     converged = False
@@ -201,10 +236,10 @@ def newton(model, x_init, x_prev, dt, max_iter=100, tol=1e-6):
         for i in newton_progressbar:
             r = model.residual(x, dt=dt, x_prev=x_prev)
             newton_progressbar.set_postfix(
-                {"residual_norm": jnp.linalg.norm(r) / jnp.sqrt(len(r))}
+                {"residual_norm": jnp.linalg.norm(r) / jnp.sqrt(r.size)}
             )
 
-            if jnp.linalg.norm(r) / jnp.sqrt(len(r)) < tol:
+            if jnp.linalg.norm(r) / jnp.sqrt(r.size) < tol:
                 converged = True
                 break
 
@@ -218,12 +253,19 @@ def newton(model, x_init, x_prev, dt, max_iter=100, tol=1e-6):
                 #         x, dt, x_prev=x_prev
                 #     )
                 # )
-                raise RuntimeError("Newton step resulted in NaN or Inf values.")
+                raise ValueError("Newton step resulted in NaN or Inf values.")
+
+            # Limit cellwise saturation updates to [-0.2, 0.2].
+            if appleyard:
+                dp = dx[::2]
+                ds = jnp.clip(dx[1::2], -0.2, 0.2)
+                dx = jnp.stack([dp, ds], axis=1).flatten()
+
             x += dx
 
-            # # Ensure physical saturation values plus small epsilon to avoid numerical issues.
+            # Ensure physical saturation values plus small epsilon to avoid numerical issues.
             p = x[::2]
-            s = jnp.clip(x[1::2], 1e-5, 1 - 1e-5)
+            s = jnp.clip(x[1::2], 1e-15, 1 - 1e-15)
             x = jnp.stack([p, s], axis=1).flatten()
 
     return x, converged
@@ -245,15 +287,14 @@ def solve(model, final_time, n_time_steps, **kwargs):
         for i in time_progressbar:
             time_progressbar.set_postfix({"time_step": i + 1})
 
-            # Solve the nonlinear problem at the current time step.
+            # Previous solution is the initial guess for the solver.
             x_prev = solutions[-1]
-            # Use the previous time step solution as the initial guess for the solver.
             try:
                 (
                     x_next,
                     converged,
                 ) = solver(model, x_prev, x_prev, dt=dt, **kwargs)
-            except RuntimeError as _:
+            except ValueError as _:
                 converged = False
 
             if converged:
