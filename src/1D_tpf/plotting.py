@@ -1,3 +1,13 @@
+"""
+
+Arclength formula taken from:
+
+Brown, D.A. and Zingg, D.W. (2017) ‘Design and evaluation of homotopies for efficient
+and robust continuation’, Applied Numerical Mathematics, 118, pp. 150–181. Available at:
+https://doi.org/10.1016/j.apnum.2017.03.001.
+
+"""
+
 import jax.numpy as jnp
 import seaborn as sns
 from hc import solve
@@ -79,6 +89,36 @@ def plot_solution(solutions, plot_pw=False, model=None):
 
     time_slider.on_changed(update)
     plt.show()
+
+
+def weighted_curvature(curvature_vectors, betas, intermediate_solutions):
+    r"""Calculated the curvature weighted by total arclength.
+
+    We use equations (30) and (31) from Brown and Zingg (2017) to approximate the
+    arclength of individual curve segments and the entire curve.
+
+    .. math::
+        \Delta s_i \approx \sqrt{\|\mathbf{x}_i - \mathbf{x}_{i - 1}\|^2 + \|\beta_i - \beta_{i - 1}\|^2}.
+
+    .. math::
+        s_{tot} \approx \sum_{i=1}^{n} \Delta s_i.
+
+    """
+    curvatures = jnp.linalg.norm(jnp.asarray(curvature_vectors), axis=-1)
+    betas = jnp.asarray(betas)
+    intermediate_solutions = jnp.asarray(intermediate_solutions)
+
+    # Calculate the total arclength of the homotopy curve.
+    segments_arclengths = jnp.sqrt(
+        jnp.linalg.norm(
+            intermediate_solutions[1:] - intermediate_solutions[:-1], axis=-1
+        )
+        ** 2
+        + (betas[1:] - betas[:-1]) ** 2
+    )
+    total_arclength = jnp.sum(segments_arclengths, axis=0)
+
+    return curvatures * total_arclength**2
 
 
 def weighted_distance(approximations, exact_solution):
@@ -350,26 +390,42 @@ def solve_and_plot(model, final_time, color, solver_name, curvature_fig=None, **
             model.initial_conditions,
         )
 
-        curvature_fig = plot_curvature_and_distance(
+        # Calculate and plot weighted curvatures as a traceability measure.
+        full_weighted_curvature = weighted_curvature(
+            model.curvature_vectors,
             model.betas,
-            curvatures=jnp.linalg.norm(curvature_vectors, axis=-1),
-            fig=curvature_fig,
-            label=rf"$\kappa$ ({solver_name})",
-            color=color,
+            intermediate_solutions,
         )
         curvature_fig = plot_curvature_and_distance(
             model.betas,
-            curvatures=jnp.linalg.norm(curvature_vectors[:, ::2], axis=-1),
+            curvatures=full_weighted_curvature,
             fig=curvature_fig,
-            label=rf"$\kappa_p$ ({solver_name})",
+            label=rf"$s_{{tot}}^2 \kappa$ ({solver_name})",
+            color=color,
+        )
+        pressure_weighted_curvature = weighted_curvature(
+            jnp.asarray(model.curvature_vectors)[:, ::2],
+            model.betas,
+            intermediate_solutions[:, ::2],
+        )
+        curvature_fig = plot_curvature_and_distance(
+            model.betas,
+            curvatures=pressure_weighted_curvature,
+            fig=curvature_fig,
+            label=rf"$s_{{tot,p}}^2 \kappa_p$ ({solver_name})",
             color=color,
             ls="--",
         )
+        saturation_weighted_curvature = weighted_curvature(
+            jnp.asarray(model.curvature_vectors)[:, 1::2],
+            model.betas,
+            intermediate_solutions[:, 1::2],
+        )
         curvature_fig = plot_curvature_and_distance(
             model.betas,
-            curvatures=jnp.linalg.norm(curvature_vectors[:, 1::2], axis=-1),
+            curvatures=saturation_weighted_curvature,
             fig=curvature_fig,
-            label=rf"$\kappa_s$ ({solver_name})",
+            label=rf"$s_{{tot,s}}^2 \kappa_s$ ({solver_name})",
             color=color,
             ls="-.",
         )

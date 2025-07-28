@@ -4,9 +4,17 @@ Note: Throughout the module, the homotopy parameter variable is denoted as ``bet
     in the docstrings it is referred to as $\lambda$, as is common in the literature.
 
 For more information on curvatures, see
+
 Brown, D.A. and Zingg, D.W. (2016) ‘Efficient numerical differentiation of
 implicitly-defined curves for sparse systems’, Journal of Computational and Applied
 Mathematics, 304, pp. 138–159. Available at: https://doi.org/10.1016/j.cam.2016.03.002.
+
+and
+
+Brown, D.A. and Zingg, D.W. (2017) ‘Design and evaluation of homotopies for efficient
+and robust continuation’, Applied Numerical Mathematics, 118, pp. 150–181. Available at:
+https://doi.org/10.1016/j.apnum.2017.03.001.
+
 
 """
 
