@@ -1,5 +1,4 @@
-"""
-This module contains functions to compute and visualize the curvature of a homotopy
+"""This module contains functions to compute and visualize the curvature of a homotopy
 between two functions, f and g, using their derivatives.
 
 Brown, D.A. and Zingg, D.W. (2016) ‘Efficient numerical differentiation of
@@ -15,8 +14,8 @@ not displayed in the UI.
 
 import matplotlib.pyplot as plt
 import numpy as np
+from curvature import HomotopyCurvature
 from matplotlib.widgets import CheckButtons, Slider
-from scipy.optimize import root
 
 INTERESTING_POLYNOMIALS = [
     # (a4, a3, a2, a1, a0)
@@ -25,33 +24,31 @@ INTERESTING_POLYNOMIALS = [
 
 
 def interactive_homotopy_curvature_plot():
-    # Initial coefficient values.
     a4_init = 0.0  # x^4 coefficient
     a3_init = 0.0  # x^3 coefficient
     a2_init = 1.0  # x^2 coefficient
     a1_init = 0.0  # x^1 coefficient
     a0_init = -20.0  # x^0 coefficient
 
-    # Create figure and subplots
     fig, (ax1, ax2, ax3, ax4) = plt.subplots(
         4, figsize=(13, 10), gridspec_kw={"hspace": 0.4}
     )
     plt.subplots_adjust(bottom=0.25, right=0.8)  # Make room for sliders and checkboxes.
 
-    class HomotopyFunctions:
+    class HomotopyCurvaturePolynomial(HomotopyCurvature):
         def __init__(self, a4, a3, a2, a1, a0):
             # Coefficients for the polynomial f(x).
-            self.a4 = a4
-            self.a3 = a3
-            self.a2 = a2
-            self.a1 = a1
-            self.a0 = a0
+            self.a4: float = a4
+            self.a3: float = a3
+            self.a2: float = a2
+            self.a1: float = a1
+            self.a0: float = a0
             # Coefficients for the polynomial g(x).
-            self.b2 = 0.0
-            self.b1 = 0.0
-            self.b0 = -20.0
+            self.b2: float = 0.0
+            self.b1: float = 0.0
+            self.b0: float = -20.0
             # Initial guess for the root-finding algorithm.
-            self.x0 = -3.0
+            self.x0: float = -3.0
 
         def f(self, x):
             return (
@@ -73,9 +70,6 @@ def interactive_homotopy_curvature_plot():
         def g_dprime(self, x):
             return 2 * self.b2
 
-        def h(self, x, beta):
-            return beta * self.g(x) + (1 - beta) * self.f(x)
-
         def disc(self, beta):
             # Calculate discriminant of the homotopy polynomial. Only valid for a4 = 0
             # and a3 = 0.
@@ -84,47 +78,8 @@ def interactive_homotopy_curvature_plot():
             c0 = beta * self.b0 + (1 - beta) * self.a0
             return c1**2 - 4 * c2 * c0
 
-        def h_prime(self, x, beta):
-            return beta * self.g_prime(x) + (1 - beta) * self.f_prime(x)
-
         def h_dprime(self, x, beta):
             return beta * self.g_dprime(x) + (1 - beta) * self.f_dprime(x)
-
-        def hessian_h(self, x, beta):
-            def hessian(v1, v2):
-                assert v1.shape[-1] == 2, (
-                    "Input vector v1 must have ``shape=(..., 2)``."
-                )
-                assert v2.shape[-1] == 2, (
-                    "Input vector v2 must have ``shape=(..., 2)``."
-                )
-                h_xx = self.h_dprime(x, beta)
-                h_xbeta = self.g_prime(x) - self.f_prime(x)
-                h_betabeta = np.zeros_like(h_xx)
-                hessian_mat = np.stack(
-                    [
-                        np.concat([h_xx, h_xbeta], axis=-1),
-                        np.concat([h_xbeta, h_betabeta], axis=-1),
-                    ],
-                    axis=-1,
-                )
-                assert hessian_mat.shape[-2:] == (2, 2), (
-                    "Hessian must have shape (..., 2, 2)."
-                )
-                return np.sum(
-                    np.matmul(hessian_mat, v1[..., None]).squeeze() * v2, axis=-1
-                )[..., None]
-
-            return hessian
-
-        def z(self, x, beta):
-            return (self.g(x) - self.f(x)) / self.h_prime(x, beta)
-
-        def beta_dot(self, x, beta):
-            return -1 / (self.z(x, beta) ** 2 + 1) ** (1 / 2)
-
-        def x_dot(self, x, beta):
-            return -1 * self.beta_dot(x, beta) * self.z(x, beta)
 
         def c_ddot(self, x, beta):
             assert x.shape[-1] == 1, "Input x must have shape (..., 1)."
@@ -148,30 +103,6 @@ def interactive_homotopy_curvature_plot():
             tangent = (xx[1:] - xx[:-1]) / hh
             return tangent
 
-        def homotopy_curvature_approx(self, xx, hh):
-            tangent = (xx[1:] - xx[:-1]) / hh
-            curvature = (tangent[1:] - tangent[:-1]) * (2 / (hh[1:] + hh[:-1]))
-            return curvature
-
-        def map_to_arclength(self, x, betas):
-            hh = np.abs(self.beta_dot(x, betas))
-            dss = (betas[:-1] - betas[1:]) / hh[:-1]
-            return np.insert(np.cumsum(dss), 0, 0)[..., None]
-
-        def solve_h_for_beta(self, beta, x0=0.0):
-            if np.isscalar(beta):
-
-                def h_for_fixed_beta(x):
-                    return self.h(x, beta)
-
-                sol = root(h_for_fixed_beta, x0)
-                return sol.x[0]
-            else:
-                result = np.zeros_like(beta)
-                for i, b in enumerate(beta):
-                    result[i] = self.solve_h_for_beta(b, x0)
-                return result
-
         def update_coefficients(self, a4, a3, a2, a1, a0):
             self.a4 = a4
             self.a3 = a3
@@ -180,8 +111,8 @@ def interactive_homotopy_curvature_plot():
             self.a0 = a0
 
     # Create the homotopy function object with initial coefficients.
-    hfunc = HomotopyFunctions(a4_init, a3_init, a2_init, a1_init, a0_init)
-    betas = np.linspace(0, 1, 200)[::-1][..., None]
+    hfunc = HomotopyCurvaturePolynomial(a4_init, a3_init, a2_init, a1_init, a0_init)
+    betas: np.ndarray = np.linspace(0, 1, 200)[::-1][..., None]
 
     # Objects to store plot objects and visibility state.
     plot_objects = {
@@ -218,19 +149,16 @@ def interactive_homotopy_curvature_plot():
         r"$\partial_{\lambda,appr}^2 x$",
     ]
 
+    # Change coefficients of f(x) with sliders.
     def recalc_and_plot(val):
         nonlocal plot_objects, visibility
-        # Get current slider values.
         a4 = a4_slider.val
         a3 = a3_slider.val
         a2 = a2_slider.val
         a1 = a1_slider.val
         a0 = a0_slider.val
-
-        # Update coefficients in the homotopy functions.
         hfunc.update_coefficients(a4, a3, a2, a1, a0)
 
-        # Clear the axes
         ax1.clear()
         ax2.clear()
         ax3.clear()
@@ -242,7 +170,7 @@ def interactive_homotopy_curvature_plot():
             # solution to ensure a continuous curve in the case of multiple real
             # solutions.
             # This could be sped up at the cost of lower accuracy by using the previous
-            # solution for the next 10 iterations.
+            # solution for the next 10 iterations or so.
             x0 = hfunc.x0
             xx = np.array([x0 := hfunc.solve_h_for_beta(b, x0=x0) for b in betas])
 
@@ -419,15 +347,6 @@ def interactive_homotopy_curvature_plot():
                 va="center",
             )
 
-        # Get current slider values.
-        a4 = a4_slider.val
-        a3 = a3_slider.val
-        a2 = a2_slider.val
-        a1 = a1_slider.val
-        a0 = a0_slider.val
-
-        # Adding labels and legends to the plots.
-
         # Display polynomial equations in the title.
         eq_f = "$f(x) = "
         if a4 >= 0:
@@ -488,7 +407,6 @@ def interactive_homotopy_curvature_plot():
 
         fig.canvas.draw_idle()
 
-    # Create sliders.
     ax_a4 = plt.axes((0.1, 0.15, 0.35, 0.03))
     ax_a3 = plt.axes((0.55, 0.15, 0.35, 0.03))
     ax_a2 = plt.axes((0.1, 0.1, 0.35, 0.03))
@@ -501,15 +419,13 @@ def interactive_homotopy_curvature_plot():
     a1_slider = Slider(ax_a1, r"$x^1$", -20.0, 20.0, valinit=a1_init)
     a0_slider = Slider(ax_a0, r"$x^0$", -30.0, 30.0, valinit=a0_init)
 
-    # Connect update function to sliders.
     a4_slider.on_changed(recalc_and_plot)
     a3_slider.on_changed(recalc_and_plot)
     a2_slider.on_changed(recalc_and_plot)
     a1_slider.on_changed(recalc_and_plot)
     a0_slider.on_changed(recalc_and_plot)
 
-    # Add visibility checkboxes for all plots.
-
+    # Toggle visibility of each plot.
     def toggle_visibility(label, ax_num):
         ax_name = f"ax{ax_num}"
         visibility[ax_name][label] = not visibility[ax_name][label]
@@ -525,13 +441,11 @@ def interactive_homotopy_curvature_plot():
 
         fig.canvas.draw_idle()
 
-    # Create checkbox axes on the right side.
     checkbox_ax1 = plt.axes((0.82, 0.70, 0.07, 0.20))
     checkbox_ax2 = plt.axes((0.82, 0.55, 0.07, 0.10))
     checkbox_ax3 = plt.axes((0.82, 0.40, 0.07, 0.10))
     checkbox_ax4 = plt.axes((0.82, 0.20, 0.07, 0.15))
 
-    # Create checkbox widgets.
     for label in keys_ax1:
         visibility["ax1"][label] = True
     for label in keys_ax2:
@@ -551,28 +465,7 @@ def interactive_homotopy_curvature_plot():
     check3.on_clicked(lambda label: toggle_visibility(label, 3))
     check4.on_clicked(lambda label: toggle_visibility(label, 4))
 
-    # Add checkboxes to toggle y-axis limits and scale
-    ylim_ax1 = plt.axes((0.92, 0.70, 0.07, 0.10))
-    ylim_ax2 = plt.axes((0.92, 0.55, 0.07, 0.05))
-    ylim_ax3 = plt.axes((0.92, 0.40, 0.07, 0.05))
-    ylim_ax4 = plt.axes((0.92, 0.20, 0.07, 0.10))
-
-    # Create checkbox widgets for y-limits and scale
-    ylim_options = ["Auto y-limits", "Log scale"]
-    ylim_check1 = CheckButtons(ylim_ax1, ylim_options, [True, False])
-    ylim_check2 = CheckButtons(ylim_ax2, ylim_options, [True, False])
-    ylim_check3 = CheckButtons(ylim_ax3, ylim_options, [True, False])
-    ylim_check4 = CheckButtons(ylim_ax4, ylim_options, [True, False])
-
-    # Default y-limits for each axis when not auto
-    default_ylims = {
-        "ax1": (-10, 10),
-        "ax2": (-10, 10),
-        "ax3": (-10, 10),
-        "ax4": (-10, 10),
-    }
-
-    # Function to handle y-limit and scale toggles
+    # Toggle y-limit and y-scale of each subfigure.
     def toggle_ylim_scale(label, ax_num):
         axes = [ax1, ax2, ax3, ax4]
         ax = axes[ax_num - 1]
@@ -604,13 +497,31 @@ def interactive_homotopy_curvature_plot():
 
         fig.canvas.draw_idle()
 
-    # Connect callbacks to checkboxes.
+    ylim_ax1 = plt.axes((0.92, 0.70, 0.07, 0.10))
+    ylim_ax2 = plt.axes((0.92, 0.55, 0.07, 0.05))
+    ylim_ax3 = plt.axes((0.92, 0.40, 0.07, 0.05))
+    ylim_ax4 = plt.axes((0.92, 0.20, 0.07, 0.10))
+
+    # Create checkbox widgets for y-limits and scale
+    ylim_options = ["Auto y-limits", "Log scale"]
+    ylim_check1 = CheckButtons(ylim_ax1, ylim_options, [True, False])
+    ylim_check2 = CheckButtons(ylim_ax2, ylim_options, [True, False])
+    ylim_check3 = CheckButtons(ylim_ax3, ylim_options, [True, False])
+    ylim_check4 = CheckButtons(ylim_ax4, ylim_options, [True, False])
+
+    default_ylims = {
+        "ax1": (-10, 10),
+        "ax2": (-10, 10),
+        "ax3": (-10, 10),
+        "ax4": (-10, 10),
+    }
+
     ylim_check1.on_clicked(lambda label: toggle_ylim_scale(label, 1))
     ylim_check2.on_clicked(lambda label: toggle_ylim_scale(label, 2))
     ylim_check3.on_clicked(lambda label: toggle_ylim_scale(label, 3))
     ylim_check4.on_clicked(lambda label: toggle_ylim_scale(label, 4))
 
-    # Add a reset button to restore initial coefficients.
+    # Reset f(x) coefficients to initial values.
     def reset(event):
         a4_slider.set_val(a4_init)
         a3_slider.set_val(a3_init)
@@ -622,7 +533,7 @@ def interactive_homotopy_curvature_plot():
     reset_button = plt.Button(reset_button_ax, "Reset")
     reset_button.on_clicked(reset)
 
-    # Add a button to cycle through interesting polynomials.
+    # Cycle through interesting polynomials f(x).
     current_index = 0
 
     def cycle_polynomials(event):
@@ -642,8 +553,8 @@ def interactive_homotopy_curvature_plot():
 
     # Initial update to show the plot
     recalc_and_plot(None)
-
     plt.show()
 
 
-interactive_homotopy_curvature_plot()
+if __name__ == "__main__":
+    interactive_homotopy_curvature_plot()
