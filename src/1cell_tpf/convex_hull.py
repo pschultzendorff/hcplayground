@@ -7,12 +7,15 @@ HullSide = Literal["upper", "lower"]
 NdArray = np.ndarray | jnp.ndarray
 
 
-def update_array(array: NdArray, idx: int | tuple[int] | list[int] | NdArray, value):
+def update_array(array: NdArray, idx: int | tuple[Any] | list[int] | NdArray, value):
     """Update array at index `idx` with `value`. Works for both numpy and jax.numpy."""
     if isinstance(array, np.ndarray):
         array[idx] = value
         return array
     elif isinstance(array, jnp.ndarray):
+        # Indexing with lists does not work in jax.numpy, so we convert lists to arrays.
+        if isinstance(idx, list):
+            idx = jnp.array(idx)
         return array.at[idx].set(value)
     else:
         raise TypeError(
@@ -72,7 +75,7 @@ def andrews_monotone_chain(
     mask: NdArray = xp.zeros((num_points,), dtype=bool)
     for point in points:
         if xp.any((hull_array == point).all(axis=1)):
-            update_array(mask, xp.nonzero((points == point).all(axis=1)), True)
+            mask = update_array(mask, xp.nonzero((points == point).all(axis=1)), True)
 
     return points, mask
 
@@ -85,6 +88,7 @@ def convex_hull(
     f_prime: None,
     f_double_prime: None,
     xp,
+    **kwargs: Any,
 ) -> Callable: ...
 
 
@@ -96,6 +100,7 @@ def convex_hull(
     f_prime: Callable,
     f_double_prime: None,
     xp,
+    **kwargs: Any,
 ) -> tuple[Callable, Callable]: ...
 
 
@@ -107,6 +112,7 @@ def convex_hull(
     f_prime: None,
     f_double_prime: Callable,
     xp,
+    **kwargs: Any,
 ) -> tuple[Callable, Callable]: ...
 
 
@@ -118,6 +124,7 @@ def convex_hull(
     f_prime: Callable,
     f_double_prime: Callable,
     xp,
+    **kwargs: Any,
 ) -> tuple[Callable, Callable, Callable]: ...
 
 
@@ -128,6 +135,7 @@ def convex_hull(
     f_prime: Callable | None = None,
     f_double_prime: Callable | None = None,
     xp=np,
+    **kwargs: Any,
 ):
     """Returns the convex hull of a function (and its derivatives) as a new function.
 
@@ -139,13 +147,15 @@ def convex_hull(
         f_double_prime: Optional. The second derivative of the function.
         xp: The numpy-like module to use (e.g., `numpy` or `jax.numpy`). Defaults to
             `numpy`.
+        **kwargs: Additional keyword arguments to pass to the `andrews_monotone_chain`
+            function.
 
     Returns:
         A tuple of functions representing the convex hull, and optionally its first and
         second derivatives if provided.
 
     """
-    points, mask = andrews_monotone_chain(f, interval, side, xp=xp)
+    points, mask = andrews_monotone_chain(f, interval, side, xp=xp, **kwargs)
     points_on_hull: NdArray = points[mask]
 
     def f_hull(x: float | NdArray) -> NdArray:

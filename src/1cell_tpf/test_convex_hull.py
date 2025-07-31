@@ -83,7 +83,9 @@ def test_andrews_monotone_chain(
 
     # Validate that the upper and lower hulls differ.
     if side == "upper":
-        _, mask_lower = andrews_monotone_chain(function, interval, "lower", xp=xp)
+        _, mask_lower = andrews_monotone_chain(
+            function, interval, "lower", num_points=num_points, xp=xp
+        )
         assert not xp.all(mask == mask_lower)
 
 
@@ -93,6 +95,7 @@ def test_andrews_monotone_chain(
     [
         ("parabola",) * 3 + ((-1, 1),),
         ("sine",) * 3 + ((0, 2.5 * math.pi),),
+        ("sine",) * 3 + ((math.pi / 2, 3 * math.pi),),
     ],
     indirect=["function", "function_prime", "function_double_prime"],
 )
@@ -113,6 +116,7 @@ def test_convex_hull(
         f_prime=function_prime,
         f_double_prime=function_double_prime,
         xp=xp,
+        num_points=300,  # Ensure the tests don't fail due to insufficient resolution.
     )
     xs: NdArray = xp.linspace(interval[0], interval[1], 100)
     ys: NdArray = function(xs)
@@ -133,37 +137,39 @@ def test_convex_hull(
     assert xp.all(xp.isfinite(ys_hull_double_prime))
 
     # The lower hull should not be above the function, and the upper hull should not be
-    # below the function.
+    # below the function. Add some tolerance to account for numerical errors in the
+    # ``jnp.sine`` function.
     if side == "lower":
-        assert xp.all(ys_hull <= ys)
+        assert xp.all((ys_hull <= ys) | xp.isclose(ys_hull, ys, atol=1e-7))
     elif side == "upper":
-        assert xp.all(ys_hull >= ys)
+        assert xp.all((ys_hull >= ys) | xp.isclose(ys_hull, ys, atol=1e-7))
 
     # Verify convex hull evaluation at interval endpoints match the original function.
-    assert xp.isclose(f_hull(interval[0]), function(interval[0]))
-    assert xp.isclose(f_hull(interval[1]), function(interval[1]))
+    assert xp.isclose(f_hull(interval[0]), function(interval[0]), atol=1e-7)
+    assert xp.isclose(f_hull(interval[1]), function(interval[1]), atol=1e-7)
 
     # Validate that the hull's derivatives match the function's derivatives where the
-    # hull and the function coincide. At the endpoints, the hull and functions always
+    # hull and the function coincide.At the endpoints, the hull and functions always
     # coincide, so we don't check here.
     hull_equals_function_mask = xp.isclose(ys_hull, ys)
     hull_equals_function_mask = update_array(hull_equals_function_mask, [0, -1], False)  # type: ignore
-    assert xp.all(
-        xp.isclose(
-            ys_hull_prime[hull_equals_function_mask],
-            ys_prime[hull_equals_function_mask],
-        )
+    assert xp.allclose(
+        ys_hull_prime[hull_equals_function_mask],
+        ys_prime[hull_equals_function_mask],
     )
-    assert xp.all(
-        xp.isclose(
-            ys_hull_double_prime[hull_equals_function_mask],
-            ys_double_prime[hull_equals_function_mask],
-        )
+    assert xp.allclose(
+        ys_hull_double_prime[hull_equals_function_mask],
+        ys_double_prime[hull_equals_function_mask],
     )
 
     # Validate that the hull's second derivative vanishes where the hull and function
-    # deviate.
-    assert xp.all(xp.isclose(ys_hull_double_prime[~hull_equals_function_mask], 0.0))
+    # deviate. At the endpoints, the hull and function always coincide, but the second
+    # derivative may differ.
+    hull_function_deviate_mask = ~hull_equals_function_mask
+    hull_function_deviate_mask = update_array(
+        hull_function_deviate_mask, [0, -1], False
+    )  # type: ignore
+    assert xp.allclose(ys_hull_double_prime[hull_function_deviate_mask], 0.0)
 
 
 @pytest.mark.parametrize(
