@@ -36,19 +36,19 @@ def interactive_homotopy_curvature_plot():
     plt.subplots_adjust(bottom=0.25, right=0.8)  # Make room for sliders and checkboxes.
 
     class HomotopyCurvaturePolynomial(HomotopyCurvature):
-        def __init__(self, a4, a3, a2, a1, a0):
+        def __init__(self, a4: float, a3: float, a2: float, a1: float, a0: float):
             # Coefficients for the polynomial f(x).
-            self.a4: float = a4
-            self.a3: float = a3
-            self.a2: float = a2
-            self.a1: float = a1
-            self.a0: float = a0
+            self.a4 = a4
+            self.a3 = a3
+            self.a2 = a2
+            self.a1 = a1
+            self.a0 = a0
             # Coefficients for the polynomial g(x).
-            self.b2: float = 0.0
-            self.b1: float = 0.0
-            self.b0: float = -20.0
+            self.b2 = 0.0
+            self.b1 = 0.0
+            self.b0 = -20.0
             # Initial guess for the root-finding algorithm.
-            self.x0: float = -3.0
+            self.x0 = -3.0
 
         def f(self, x):
             return (

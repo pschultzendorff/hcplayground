@@ -33,7 +33,7 @@ def example_2() -> None:
         return x**5 / 5
 
     converged, betas, xss, yss = hc_solver(f, g, x0=0.5, decay=0.8)
-    xs_fine: jnp.ndarray = jnp.linspace(-7, 3, 1000)
+    xs_fine = jnp.linspace(-7, 3, 1000)
     if converged:
         for i, (beta, xs, ys) in enumerate(zip(betas, xss, yss)):
 

@@ -146,7 +146,7 @@ class HomotopyCurvature:
             return sol.x[0]
         else:
             # For array of betas, solve for each beta.
-            result = np.zeros_like(beta)  #
+            result = np.zeros_like(beta)
             beta = cast(np.ndarray, beta)
             for i, b in enumerate(beta):
                 result[i] = self.solve_h_for_beta(b, x0)
@@ -156,7 +156,7 @@ class HomotopyCurvature:
         betas = np.linspace(0, 1, 100)[::-1][..., None]
         xs: np.ndarray = self.solve_h_for_beta(betas, x0=-3.0)  # type: ignore
         ss: np.ndarray = self.map_to_arclength(xs, betas)  # type: ignore
-        tangent = self.x_dot(xs, betas)  # type: ignore
+        tangent: np.ndarray = self.x_dot(xs, betas)  # type: ignore
         plt.figure(figsize=(10, 6))
         plt.quiver(
             ss[:-10:10],

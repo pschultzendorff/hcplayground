@@ -27,11 +27,11 @@ def newton(
 
     """
     x: float = x0
-    y: float = f(x)
+    y = f(x)
     xs: list[float] = [x]
     ys: list[float] = [y]
     f_grad = jax.grad(f)
-    iter: int = 0
+    iter = 0
 
     def step() -> None:
         nonlocal x, y, iter
@@ -76,7 +76,7 @@ def hc_solver(
     newton_max_iter: int = 30,
 ) -> tuple[bool, jnp.ndarray, list, list]:
     x: float = x0
-    beta: float = 1.0
+    beta = 1.0
 
     betas: list[float] = [beta]
     xss: list[jnp.ndarray] = []

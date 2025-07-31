@@ -63,8 +63,8 @@ def plot_hc(
     ax = fig.add_subplot(projection="3d")
 
     # Calculate exact h(x) for fine grid for each beta.
-    betas_fine: jnp.ndarray = jnp.arange(1, 0, -0.05)
-    xs_fine: jnp.ndarray = jnp.linspace(
+    betas_fine = jnp.arange(1, 0, -0.05)
+    xs_fine = jnp.linspace(
         min([min(xx) for xx in xss]), max([max(xx) for xx in xss]), 50
     )
     yss_list: list[jnp.ndarray] = []
@@ -76,7 +76,7 @@ def plot_hc(
             return beta * g(x) + (1 - beta) * f(x)
 
         yss_list.append(h(xs_fine))  # type: ignore
-    yss_fine: jnp.ndarray = jnp.array(yss_list)
+    yss_fine = jnp.array(yss_list)
 
     xs_fine, betas_fine = jnp.meshgrid(xs_fine, betas_fine)
 
