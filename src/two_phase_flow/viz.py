@@ -1,62 +1,61 @@
-"""
+"""Visualization for homotopy curves of the 1D two-phase flow problem."""
 
-Arclength formula taken from:
-
-Brown, D.A. and Zingg, D.W. (2017) ‘Design and evaluation of homotopies for efficient
-and robust continuation’, Applied Numerical Mathematics, 118, pp. 150–181. Available at:
-https://doi.org/10.1016/j.apnum.2017.03.001.
-
-"""
+from typing import Optional, TypeAlias
 
 import jax.numpy as jnp
 import seaborn as sns
-from hc import solve
+from hc import HCModel
+from jax.typing import ArrayLike as ArrayLike_jax
 from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.widgets import Slider
+from model import TPFModel
+from numpy.typing import ArrayLike as ArrayLike_np
+from solvers import solve
+
+ArrayLike: TypeAlias = ArrayLike_jax | ArrayLike_np
 
 sns.set_theme(style="whitegrid")
 
 
-def plot_solution(solutions, plot_pw=False, model=None):
-    """Plot the solution of the two-phase flow problem with an interactive time slider."""
-    # Convert solutions to numpy array for easier manipulation.
-    solutions_array = jnp.array(solutions)
-    n_time_steps = solutions_array.shape[0]
-    n_cells = solutions_array.shape[-1] // 2
+def plot_solution(
+    solutions: ArrayLike, plot_pw: bool = False, model: Optional[TPFModel] = None
+):
+    """Plot the solution of the two-phase flow problem with an interactive time slider.
 
-    # Create figure and axis.
+    Parameters:
+        solutions: Array-like structure containing the solution data.
+        plot_pw: Whether to plot wetting pressure. Defaults to False.
+        model: Optional TPFModel instance for calculating wetting pressure. Defaults to
+        None.
+
+    """
+    sol = jnp.array(solutions)
+    n_time_steps, n_vars = sol.shape
+    n_cells = n_vars // 2
+
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax2 = ax.twinx()  # Create a second y-axis for the saturation.
+    ax2 = ax.twinx()
     plt.subplots_adjust(bottom=0.25)  # Make room for slider.
 
-    # Cell centers for plotting.
-    xx = jnp.linspace(0, n_cells, n_cells)
+    xs = jnp.linspace(0, n_cells, n_cells)  # Cell centers for plotting.
 
-    # Initial plot with first time step.
-    pressures = solutions_array[0, ::2]
-    saturations = solutions_array[0, 1::2]
+    pressures = sol[:, ::2]
+    saturations = sol[:, 1::2]
     if plot_pw:
         if model is None:
             raise ValueError("Model must be provided for wetting pressure calculation.")
-        wetting_pressures = solutions_array[:, ::2] - model.pc(solutions_array[:, 1::2])
+        pressures_w = pressures - model.pc(pressures)
     else:
-        wetting_pressures = jnp.zeros_like(solutions_array[:, ::2])
+        pressures_w = jnp.zeros_like(pressures)
 
-    (pn_line,) = ax.plot(xx, pressures, "o-", color="tab:blue", label="$p_n$")
-    (pw_line,) = ax.plot(
-        xx, wetting_pressures[0], "x-", color="tab:green", label=r"$p_w$"
-    )
-    (s_line,) = ax2.plot(xx, saturations, "v-", color="tab:orange", label="$s_w$")
+    (pn_line,) = ax.plot(xs, pressures, "o-", color="tab:blue", label="$p_n$")
+    (pw_line,) = ax.plot(xs, pressures_w, "x-", color="tab:green", label=r"$p_w$")
+    (s_line,) = ax2.plot(xs, saturations, "v-", color="tab:orange", label="$s_w$")
 
-    # Find min and max pressure values for consistent y-axis.
-    p_min = min(
-        jnp.concatenate([solutions_array[:, ::2], wetting_pressures]).min(),  # type: ignore
-        0,
-    )
-    p_max = jnp.concatenate([solutions_array[:, ::2], wetting_pressures]).max() * 1.1
-    ax.set_ylim(p_min, p_max)  # type: ignore
-
-    ax2.set_ylim(0, 1)  # Saturation is between 0 and 1.
+    arr = jnp.concatenate([pressures, pressures_w])
+    ax.set_ylim(min(arr.min(), 0), arr.max() * 1.1)  # type: ignore
+    ax2.set_ylim(0, 1)
 
     ax.set_xlabel("x")
     ax.set_ylabel("$p_n$", color="tab:blue")
@@ -69,21 +68,14 @@ def plot_solution(solutions, plot_pw=False, model=None):
 
     # Add slider
     ax_slider = plt.axes((0.15, 0.1, 0.7, 0.03))
-    time_slider = Slider(
-        ax=ax_slider,
-        label=r"$t$",
-        valmin=0,
-        valmax=n_time_steps,
-        valinit=0,
-        valstep=1,
-    )
+    time_slider = Slider(ax_slider, r"$t$", 0, n_time_steps, valinit=0, valstep=1)
 
     # Update function for slider
     def update(val):
         time_idx = int(time_slider.val)
-        pn_line.set_ydata(solutions_array[time_idx, ::2])
-        pw_line.set_ydata(wetting_pressures[time_idx])
-        s_line.set_ydata(solutions_array[time_idx, 1::2])
+        pn_line.set_ydata(pressures[time_idx])
+        pw_line.set_ydata(pressures_w[time_idx])
+        s_line.set_ydata(saturations[time_idx])
         ax.set_title(f"Solution (time step: {time_idx})")
         fig.canvas.draw_idle()
 
@@ -91,10 +83,12 @@ def plot_solution(solutions, plot_pw=False, model=None):
     plt.show()
 
 
-def weighted_curvature(curvature_vectors, betas, intermediate_solutions):
+def weighted_curvature(
+    curvature_vectors: ArrayLike, betas: ArrayLike, intermediate_solutions: ArrayLike
+):
     r"""Calculated the curvature weighted by total arclength.
 
-    We use equations (30) and (31) from Brown and Zingg (2017) to approximate the
+    We use equations (30) and (31) from Brown & Zingg (2017) to approximate the
     arclength of individual curve segments and the entire curve.
 
     .. math::
@@ -102,6 +96,11 @@ def weighted_curvature(curvature_vectors, betas, intermediate_solutions):
 
     .. math::
         s_{tot} \approx \sum_{i=1}^{n} \Delta s_i.
+
+
+    Brown, D.A. and Zingg, D.W. (2017) ‘Design and evaluation of homotopies for
+    efficient and robust continuation’, Applied Numerical Mathematics, 118, pp. 150–181.
+    Available at: https://doi.org/10.1016/j.apnum.2017.03.001.
 
     """
     curvatures = jnp.linalg.norm(jnp.asarray(curvature_vectors), axis=-1)
@@ -121,7 +120,7 @@ def weighted_curvature(curvature_vectors, betas, intermediate_solutions):
     return curvatures * total_arclength**2
 
 
-def weighted_distance(approximations, exact_solution):
+def weighted_distance(approximations: ArrayLike, exact_solution: jnp.ndarray):
     """Weight distance in pressure and saturations separately by the magnitude of the
     exact solution."""
     approximations = jnp.asarray(approximations)
@@ -146,7 +145,11 @@ def weighted_distance(approximations, exact_solution):
 
 
 def plot_curvature_and_distance(
-    betas, curvatures=None, distances=None, fig=None, **kwargs
+    betas: ArrayLike,
+    curvatures: ArrayLike | None = None,
+    distances: ArrayLike | None = None,
+    fig: Optional[Figure] = None,
+    **kwargs,
 ):
     """Plot the curvature of the homotopy curve."""
     betas = jnp.asarray(betas)
@@ -157,19 +160,17 @@ def plot_curvature_and_distance(
     else:
         ax1, ax2 = fig.axes
 
-    # Plot curvature and distance over \beta range.
+    # Plot curvature and distance over beta range.
     if curvatures is not None:
-        curvatures = jnp.asarray(curvatures)
-        ax1.plot(betas, curvatures, linewidth=2, **kwargs)
+        ax1.plot(betas, jnp.asarray(curvatures), linewidth=2, **kwargs)
     if distances is not None:
-        distances = jnp.asarray(distances)
-        ax2.plot(betas, distances, linewidth=2, **kwargs)
+        ax2.plot(betas, jnp.asarray(distances), linewidth=2, **kwargs)
 
     ax1.set_xlabel(r"$\beta$", fontsize=12)
     ax1.set_ylabel(r"$Curvature \kappa$", fontsize=12)
     ax1.set_yscale("log")
     ax1.set_xlim(1, 0)
-    ax1.set_ylim(bottom=1e-3, top=1e8)
+    # ax1.set_ylim(bottom=1e-3, top=1e8)
     ax1.set_title("Curvature Components Along Homotopy Path", fontsize=14)
     ax1.grid(True, linestyle="--", alpha=0.5)
 
@@ -177,8 +178,8 @@ def plot_curvature_and_distance(
     ax2.set_ylabel(r"$\tilde{d}(\mathbf{x}_{\beta = 1}, \mathbf{x}_{\beta = 0})$")
     ax2.set_yscale("log")
     ax2.set_xlim(1, 0)
-    ax2.set_ylim(bottom=1e-3, top=1)
-    ax2.set_title(r"Weighted Distance to Solution at $\beta = 0$", fontsize=14)
+    # ax2.set_ylim(bottom=1e-3, top=1)
+    ax2.set_title(r"Weighted Distance to Solution", fontsize=14)
     ax2.grid(True, linestyle="--", alpha=0.5)
 
     handles1, labels1 = ax1.get_legend_handles_labels()
@@ -202,7 +203,7 @@ def plot_curvature_and_distance(
     return fig
 
 
-def plot_solution_curve(solutions, betas, model, diffusion_coeff=None):
+def plot_solution_curve(solutions: ArrayLike, betas: ArrayLike, model: HCModel):
     fig, (ax1, ax2) = plt.subplots(
         1, 2, figsize=(12, 6), subplot_kw={"projection": "3d"}
     )
@@ -247,37 +248,18 @@ def plot_solution_curve(solutions, betas, model, diffusion_coeff=None):
     ax2.set_title("Water Saturation $s_w$", fontsize=14)
     fig.colorbar(surf2, ax=ax2, shrink=0.6, aspect=10, pad=0.15)
 
-    # Optional diffusion coefficient overlay
-    # if diffusion_coeff is not None:
-    #     X_overlay =jnp.array([1])
-    #     Y_overlay =jnp.linspace(0, solutions.shape[-1] // 2, solutions.shape[-1] // 2)
-    #     X_overlay, Y_overlay =jnp.meshgrid(X_overlay, Y_overlay)
-
-    #     for ax in [ax1, ax2]:
-    #         ax_overlay = fig.add_axes(ax.get_position(), projection="3d")
-    #         ax_overlay.plot(
-    #             X_overlay,
-    #             Y_overlay,
-    #             diffusion_coeff[:-1],
-    #             color="red",
-    #             linewidth=2,
-    #             label=r"$\\beta$",
-    #         )
-    #         ax_overlay.set_xlim(ax.get_xlim())
-    #         ax_overlay.set_ylim(ax.get_ylim())
-    #         ax_overlay.set_xticks([])
-    #         ax_overlay.set_yticks([])
-    #         ax_overlay.set_zticks([])
-    #         ax_overlay.xaxis.line.set_color((0, 0, 0, 0))
-    #         ax_overlay.yaxis.line.set_color((0, 0, 0, 0))
-    #         ax_overlay.view_init(elev=30, azim=-45)
-
     fig.suptitle("Solution Curves Along Homotopy Path", fontsize=16)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     return fig
 
 
-def plot_residual_curve(solutions, betas, model, dt, x_prev=None):
+def plot_residual_curve(
+    solutions: ArrayLike,
+    betas: ArrayLike,
+    model: HCModel,
+    dt: float,
+    x_prev: Optional[jnp.ndarray] = None,
+):
     fig, (ax1, ax2) = plt.subplots(
         1, 2, figsize=(12, 6), subplot_kw={"projection": "3d"}
     )
@@ -339,12 +321,18 @@ def plot_residual_curve(solutions, betas, model, dt, x_prev=None):
     return fig
 
 
-def solve_and_plot(model, final_time, color, solver_name, curvature_fig=None, **kwargs):
+def solve_and_plot(
+    model: HCModel,
+    final_time: float,
+    color: str,
+    solver_name: str,
+    curvature_fig: Optional[Figure] = None,
+    **kwargs,
+):
     model.reset()
 
     _, converged = solve(model, final_time=final_time, n_time_steps=1, **kwargs)
     intermediate_solutions = jnp.asarray(model.intermediate_solutions)
-    curvature_vectors = jnp.asarray(model.curvature_vectors)
 
     if converged:
         print(
@@ -371,14 +359,6 @@ def solve_and_plot(model, final_time, color, solver_name, curvature_fig=None, **
             ls=":",
         )
     if len(model.betas) > 1:
-        # Plot solution curve AND diffusion coefficients for diffusion based HC.
-        # if isinstance(model, DiffusionHC):
-        #     solution_curve_fig = plot_solution_curve(
-        #         model.intermediate_solutions,
-        #         model.betas,
-        #         model.adaptive_diffusion_coeff,
-        #     )
-        # else:
         solution_curve_fig = plot_solution_curve(
             intermediate_solutions, model.betas, model
         )

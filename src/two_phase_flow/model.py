@@ -1,4 +1,4 @@
-"""Implicit finite volume solver for two-phase flow in porous media.
+"""Implicit finite volume model for two-phase flow in porous media.
 
 
 An example geometry with the domain discretized into two cells looks like this:
@@ -16,30 +16,19 @@ nonwetting pressure and wetting saturation.
 
 The problem is discretized with implicit Euler in time and cell-centered finite volumes
 in space. The face fluxes are evaluated with two-point flux approximation (where the
-transmissibilities are fixed beforehand) and phase-potential upwinding. The resulting
-system of nonlinear equations at each time step is solved with a homotopy continuation
-method, where the corrector step uses Newton"s method.
+transmissibilities are fixed beforehand) and phase-potential upwinding.
 
 """
 
-import logging
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
-import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-
-def smooth_heaviside(x, k=20.0):
-    """Smooth approximation to the Heaviside function."""
-    return 0.5 * (1 + jnp.tanh(k * x))
 
 
 class TPFModel:
     def __init__(self, **kwargs) -> None:
+        # General model and solver parameters.
         self.num_cells = kwargs["num_cells"]
         self.domain_size = kwargs.get("domain_size", 1.0)
         self.permeabilities = kwargs["permeabilities"]
@@ -52,19 +41,25 @@ class TPFModel:
         self.mu_w = kwargs["mu_w"]
         self.mu_n = kwargs["mu_n"]
 
+        # Constitutive laws and parameters.
+        self.cp_model = kwargs.get("pc_model", "Brooks-Corey")
+        self.rp_model = kwargs.get("rp_model", "Brooks-Corey")
         self.nb = kwargs.get("nb", 2)
         self.p_e = kwargs.get("p_e", 5.0)
         self.n1 = kwargs.get("n1", 2)
         self.n2 = kwargs.get("n2", 1 + 2 / self.nb)
         self.n3 = kwargs.get("n3", 1)
 
-        self.linear_system = (
-            None  # Placeholder for the linear system (Jacobian, residual).
-        )
+        # Placeholder for the linear system (Jacobian, residual).
+        self.linear_system: tuple = (None, None)
 
         self.initialize_transmissibilities()
 
     def initialize_transmissibilities(self):
+        """Initialize cell face transmissibilities with two-point flux approximation
+        (TPFA).
+
+        """
         # Harmonic average of half-transmissibilities gives the cell faces
         # transmissibilities.
         half_transmissibilities = (
@@ -93,40 +88,55 @@ class TPFModel:
         if self.bc[1] == "neumann":
             self.transmissibilities = jnp.append(self.transmissibilities, 0.0)
 
-    def pc(self, s):
+    # We ignore the possiblity of the user passing invalid models for the constitutive
+    # laws.
+    def pc(self, s: jnp.ndarray, cp_model: Optional[str] = None) -> jnp.ndarray:  # type: ignore
         """Capillary pressure function. Brooks-Corey model.
 
         Limit to above to avoid problems with Newton when :math:`s_w = 0`.
 
         """
-        return jnp.minimum(
-            jnp.nan_to_num(
-                self.p_e * s ** (-1 / self.nb),
-                nan=0.0,
-                posinf=self.p_e * 10,
-                neginf=0.0,
-            ),
-            self.p_e * 10,
-        )
+        if cp_model is None:
+            cp_model = self.cp_model
+        if cp_model == "Brooks-Corey":
+            return jnp.minimum(
+                jnp.nan_to_num(
+                    self.p_e * s ** (-1 / self.nb),
+                    nan=0.0,
+                    posinf=self.p_e * 10,
+                    neginf=0.0,
+                ),
+                self.p_e * 10,
+            )
+        elif cp_model == "linear":
+            return self.p_e * (2 - s)
+        elif cp_model == "zero":
+            return jnp.zeros_like(s)
 
-    def mobility_w(self, s):
+    def mobility_w(self, s: jnp.ndarray, rp_model: Optional[str] = None) -> jnp.ndarray:
         """Mobility of the wetting phase. Brooks-Corey model."""
-        # k_w = jnp.where(
-        #     s <= 1,
-        #     jnp.where(s >= 0, s ** (self.n1 + self.n2 * self.n3), 0.0),  # type: ignore
-        #     1.0,
-        # )
-        k_w = jnp.where(s >= 0, s ** (self.n1 + self.n2 * self.n3), 0.0)
+        if rp_model is None:
+            rp_model = self.rp_model
+        if rp_model == "Brooks-Corey":
+            k_w = jnp.where(s >= 0, s ** (self.n1 + self.n2 * self.n3), 0.0)
+        elif rp_model == "Corey":
+            k_w = jnp.where(s >= 0, s**2, 0.0)
+        elif rp_model == "linear":
+            k_w = s
         return k_w / self.mu_w  # type: ignore
 
-    def mobility_n(self, s):
+    def mobility_n(self, s: jnp.ndarray, rp_model: Optional[str] = None) -> jnp.ndarray:
         """Mobility of the nonwetting phase. Brooks-Corey model."""
-        # k_n = jnp.where(
-        #     s >= 0,
-        #     jnp.where(s <= 1, (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3, 0.0),  # type: ignore
-        #     1.0,
-        # )
-        k_n = jnp.where(s <= 1, (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3, 0.0)
+        if rp_model is None:
+            rp_model = self.rp_model
+        if rp_model == "Brooks-Corey":
+            k_n = jnp.where(
+                s <= 1, (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3, 0.0
+            )
+        elif rp_model == "Corey":
+            k_n = jnp.where(s <= 1, (1 - s) ** 2, 0.0)
+        elif rp_model == "linear":
+            k_n = 1 - s
         return k_n / self.mu_n  # type: ignore
 
     def compute_face_fluxes(self, p, s):
@@ -221,88 +231,3 @@ class TPFModel:
     def jacobian(self, x, dt, x_prev=None):
         """Compute the Jacobian of the system at (x, beta)."""
         return jax.jacrev(self.residual, argnums=0)(x, dt, x_prev=x_prev)
-
-
-def newton(model, x_init, x_prev, dt, max_iter=100, tol=5e-6, appleyard=False):
-    """Solve the system using Newton"s method."""
-    x = x_init.copy()
-    converged = False
-
-    newton_progressbar = tqdm.trange(
-        max_iter, desc="Newton iterations", position=0, leave=False
-    )
-
-    with logging_redirect_tqdm([logger]):
-        for i in newton_progressbar:
-            r = model.residual(x, dt=dt, x_prev=x_prev)
-            newton_progressbar.set_postfix(
-                {"residual_norm": jnp.linalg.norm(r) / jnp.sqrt(r.size)}
-            )
-
-            if jnp.linalg.norm(r) / jnp.sqrt(r.size) < tol:
-                converged = True
-                break
-
-            J = model.jacobian(x, dt=dt, x_prev=x_prev)
-            model.linear_system = (J, r)
-
-            dx = jnp.linalg.solve(J, -r)
-            if jnp.isnan(dx).any() or jnp.isinf(dx).any():
-                # print(
-                #     jax.make_jaxpr(jax.jacrev(model.residual, argnums=0))(
-                #         x, dt, x_prev=x_prev
-                #     )
-                # )
-                raise ValueError("Newton step resulted in NaN or Inf values.")
-
-            # Limit cellwise saturation updates to [-0.2, 0.2].
-            if appleyard:
-                dp = dx[::2]
-                ds = jnp.clip(dx[1::2], -0.2, 0.2)
-                dx = jnp.stack([dp, ds], axis=1).flatten()
-
-            x += dx
-
-            # Ensure physical saturation values plus small epsilon to avoid numerical issues.
-            p = x[::2]
-            s = jnp.clip(x[1::2], 1e-15, 1 - 1e-15)
-            x = jnp.stack([p, s], axis=1).flatten()
-
-    return x, converged
-
-
-def solve(model, final_time, n_time_steps, **kwargs):
-    """Solve the two-phase flow problem over a given time period."""
-    dt = final_time / n_time_steps
-    solutions = [model.initial_conditions]
-
-    time_progressbar_position = 2 if hasattr(model, "beta") else 1
-    time_progressbar = tqdm.trange(
-        n_time_steps, desc="Time steps", position=time_progressbar_position, leave=False
-    )
-
-    solver = newton
-
-    with logging_redirect_tqdm([logger]):
-        for i in time_progressbar:
-            time_progressbar.set_postfix({"time_step": i + 1})
-
-            # Previous solution is the initial guess for the solver.
-            x_prev = solutions[-1]
-            try:
-                (
-                    x_next,
-                    converged,
-                ) = solver(model, x_prev, x_prev, dt=dt, **kwargs)
-            except ValueError as _:
-                converged = False
-
-            if converged:
-                solutions.append(x_next)
-            else:
-                logger.info(
-                    f"Model {model.__class__.__name__} did not converge at time step {i + 1}."
-                )
-                break
-
-    return solutions, converged

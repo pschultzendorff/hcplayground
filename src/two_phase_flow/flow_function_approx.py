@@ -4,12 +4,21 @@ interactive sliders.
 
 """
 
+import pathlib
+import sys
+
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.widgets import Slider
 from scipy.optimize import minimize
 
+sys.path.append(str(pathlib.Path(__file__).parent.parent))
 
+from numeric_function_typing import numeric_binary_func
+from numpy.typing import ArrayLike as ArrayLike_np
+
+
+@numeric_binary_func
 def f_w(s, mobility_ratio):
     """Flow function :math:`f_w(s) = s^2 / (s^2 + M * (1 - s)^2)`."""
     mobility_w = s**2
@@ -17,28 +26,35 @@ def f_w(s, mobility_ratio):
     return mobility_w / mobility_t
 
 
-def rational_gn_with_pn0(ss, p_coef, q_coef):
+def rational_gn_with_pn0(
+    s: float | np.ndarray, p_coef: ArrayLike_np, q_coef: ArrayLike_np
+) -> np.ndarray:
     """Rational function :math:`g_n(x) = P_n(x) / Q_n(x)` with :math:`P_n(0) = 0`."""
     p_coef_full = np.copy(p_coef)
     # Force constant term zero to ensure g(0) = 0.
     p_coef_full[-1] = 0
-    p = np.polyval(p_coef_full, ss)
-    q = np.polyval(q_coef, ss)
+    p = np.polyval(p_coef_full, s)
+    # Mypy complains about ArrayLike_np not being _ArraLikeComplex_co.
+    q = np.polyval(q_coef, s)  # type: ignore
     return p / q
 
 
-def objective(params, ss, ys_true, deg_num):
+def objective(
+    params: ArrayLike_np, ss: np.ndarray, ys_true: np.ndarray, deg_num: int
+) -> np.ndarray:
     """Objective function for fitting rational function to the flow function."""
-    p_coef = params[: deg_num + 1]
-    q_coef = params[deg_num + 1 :]
+    p_coef = np.asarray(params)[: deg_num + 1]
+    q_coef = np.asarray(params)[deg_num + 1 :]
     ys_pred = rational_gn_with_pn0(ss, p_coef, q_coef)
     return np.max((ys_true - ys_pred) ** 2)
 
 
-def concavity_convexity_constraint(params, ss, deg_num):
+def concavity_convexity_constraint(
+    params: ArrayLike_np, ss: np.ndarray, deg_num: int
+) -> np.ndarray:
     """Constraint to ensure the rational function is neither concave nor convex."""
-    p_coef = params[: deg_num + 1]
-    q_coef = params[deg_num + 1 :]
+    p_coef = np.asarray(params)[: deg_num + 1]
+    q_coef = np.asarray(params)[deg_num + 1 :]
     ys_pred = rational_gn_with_pn0(ss, p_coef, q_coef)
     # Second derivative.
     dg_ds = np.gradient(ys_pred, ys_pred[1] - ss[0])
@@ -46,27 +62,31 @@ def concavity_convexity_constraint(params, ss, deg_num):
     return d2g_ds2 - 1e-3
 
 
-def monotonicity_constraint_bc(params, ss, deg_num):
+def monotonicity_constraint_bc(
+    params: ArrayLike_np, ss: np.ndarray, deg_num: int
+) -> np.ndarray:
     """Constraint to ensure the rational function is monotone."""
-    p_coef = params[: deg_num + 1]
-    q_coef = params[deg_num + 1 :]
+    p_coef = np.asarray(params)[: deg_num + 1]
+    q_coef = np.asarray(params)[deg_num + 1 :]
     ys_pred = rational_gn_with_pn0(ss, p_coef, q_coef)
     dg_ds = np.gradient(ys_pred, ss[1] - ss[0])
     return dg_ds
 
 
-def boundary_constraint(params, deg_num):
+def boundary_constraint(params: ArrayLike_np, deg_num: int):
     """Constraint to ensure the rational function takes value 1 at 1."""
-    p_coef = params[: deg_num + 1]
-    q_coef = params[deg_num + 1 :]
+    p_coef = np.asarray(params)[: deg_num + 1]
+    q_coef = np.asarray(params)[deg_num + 1 :]
     p_coef_full = np.copy(p_coef)
-    p_coef_full[-1] = 0  # enforce p_n=0
+    p_coef_full[-1] = 0  # Enforce p_n=0.
     P1 = np.polyval(p_coef_full, 1)
     Q1 = np.polyval(q_coef, 1)
-    return P1 - Q1  # must be zero
+    return P1 - Q1
 
 
-def combined_constraints_bc(params, ss, deg_num):
+def combined_constraints_bc(
+    params: ArrayLike_np, ss: np.ndarray, deg_num: int
+) -> np.ndarray:
     """Combine the convexity, concavity, and monotonicity constraints."""
     return np.concatenate(
         [
@@ -76,7 +96,7 @@ def combined_constraints_bc(params, ss, deg_num):
     )
 
 
-def fit_rational_function(ss, ys, deg_num=3, deg_den=3):
+def fit_rational_function(ss: np.ndarray, ys: np.ndarray, deg_num=3, deg_den=3):
     """Fit a rational function to the flow function under the given constraints."""
     init_params = np.random.randn(deg_num + 1 + deg_den + 1)
     cons = [

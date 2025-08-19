@@ -55,10 +55,6 @@ model_params = {
 # solutions, _ = solve(model, final_time=1, n_time_steps=50)
 # plot_solution(solutions)
 
-# model = TPFModel(p_e=30.0)
-# solutions, _ = solve(model, final_time=10.0, n_time_steps=100, tol=5e-5)
-# plot_solution(solutions, plot_pw=True, model=model)
-
 
 model_fluxhc1 = FluxHC4(**model_params, k=30.0)
 model_fluxhc2 = FluxHC5(**model_params, k=30.0)

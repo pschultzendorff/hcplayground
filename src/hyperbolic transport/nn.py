@@ -1,3 +1,8 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from matplotlib import pyplot as plt
+
 """Neural network flux function to be used in homotopy continuation methods."""
 
 import torch
@@ -27,23 +32,24 @@ class FluxNN(nn.Module):
         return x
 
 
-class ConvexLoss(nn.Module):
-    """Partial loss function to ensure that the network is convex or concave w.r.t. all
-    its outputs."""
+class ConvexConcaveLoss(nn.Module):
+    """Partial loss function to ensure that the network is neither convex nor concave
+    w.r.t. the saturation.
+
+    """
 
     def __init__(self):
-        super(ConvexLoss, self).__init__()
+        super().__init__()
 
-    def forward(self, output, target):
+    def forward(self, output):
         """Compute the convex loss."""
         # Assuming output and target are of shape (batch_size, output_dim)
         loss = torch.mean((output - target) ** 2)
         return loss
 
 
-class DistanceLoss(nn.Module):
-    """Distance loss function to ensure that the network outputs are close to the
-    target values."""
+class CurvatureLoss(nn.Module):
+    """Curvature loss to ensure that the ."""
 
     def __init__(self):
         super(DistanceLoss, self).__init__()
@@ -72,28 +78,57 @@ class CombinedLoss(nn.Module):
         return self.alpha * convex_loss_value + self.beta * distance_loss_value
 
 
-class BrooksCoreyWettingFlux(nn.Module):
+class CoreyFlux(nn.Module):
     """Target wetting flux function."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.mu_w = kwargs["mu_w"]
-        self.mu_n = kwargs["mu_n"]
-
-        self.nb = kwargs.get("nb", 2)
-        self.p_e = kwargs.get("p_e", 5.0)
-        self.n1 = kwargs.get("n1", 2)
-        self.n2 = kwargs.get("n2", 1 + 2 / self.nb)
-        self.n3 = kwargs.get("n3", 1)
 
     def mobility_w(self, s):
         """Mobility function for water."""
-        return s ** (self.n1 + self.n2 * self.n3) / self.mu_w
+        return s**2
 
     def mobility_n(self, s):
         """Mobility function for non-aqueous phase."""
-        return (1 - s) ** self.n1 * (1 - s**self.n2) ** self.n3 / self.mu_n
+        return (1 - s) ** 2
 
     def forward(self, x):
         """Forward pass through the neural network."""
-        return self(x)
+        # Assuming x is a tensor of shape (batch_size, 2) where the first column is
+        # saturation and the second column is the mobility ratio.
+        s = x[:, 0]
+        mobility_ratio = x[:, 1]
+        lambda_w = self.mobility_w(s)
+        lambda_n = self.mobility_n(s)
+        return lambda_w / (lambda_w + mobility_ratio * lambda_n)
+
+
+def train_model(model, dataloader, optimizer, loss_fn, num_epochs=10):
+    """Train the neural network model."""
+    model.train()
+    for epoch in range(num_epochs):
+        for batch in dataloader:
+            optimizer.zero_grad()
+            output = model(batch)
+            loss = loss_fn(output, batch)
+            loss.backward()
+            optimizer.step()
+        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item()}")
+    print("Training complete.")
+
+
+def plot(model):
+    """Plot the neural network flux function."""
+    s_vals = torch.linspace(0, 1, 100)
+    x = torch.stack([s_vals, s_vals], dim=1)  # Assuming two saturations
+
+    with torch.no_grad():
+        flux_values = model(x)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(s_vals.numpy(), flux_values.numpy())
+    plt.xlabel("Saturation")
+    plt.ylabel("Flux")
+    plt.title("Neural Network Flux Function")
+    plt.grid()
+    plt.show()

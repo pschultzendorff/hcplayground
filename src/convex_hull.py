@@ -4,10 +4,10 @@ import jax.numpy as jnp
 import numpy as np
 
 HullSide = Literal["upper", "lower"]
-NdArray = np.ndarray | jnp.ndarray
+Array = np.ndarray | jnp.ndarray
 
 
-def update_array(array: NdArray, idx: int | tuple[Any] | list[int] | NdArray, value):
+def update_array(array: Array, idx: int | tuple[Any] | list[int] | Array, value):
     """Update array at index `idx` with `value`. Works for both numpy and jax.numpy."""
     if isinstance(array, np.ndarray):
         array[idx] = value
@@ -29,7 +29,7 @@ def andrews_monotone_chain(
     side: HullSide,
     num_points: int = 100,
     xp=np,
-) -> tuple[NdArray, NdArray]:
+) -> tuple[Array, Array]:
     """
     Computes the convex hull of a set of points using the Andrews monotone chain algorithm.
 
@@ -48,14 +48,14 @@ def andrews_monotone_chain(
             indicating which sample points are part of the convex hull.
 
     """
-    xx: NdArray = xp.linspace(interval[0], interval[1], num_points)
-    yy: NdArray = xp.vectorize(f)(xx)
+    xx: Array = xp.linspace(interval[0], interval[1], num_points)
+    yy: Array = xp.vectorize(f)(xx)
     # Stack to create an array of points on the graph of the function. No need to sort
     # or filter out duplicates, as xx was generated sorted and with unique values.
-    points: NdArray = xp.column_stack((xx, yy))
+    points: Array = xp.column_stack((xx, yy))
 
     # Initialize the convex hull with the first two points.
-    hull: list[NdArray] = list(points[:2])
+    hull: list[Array] = list(points[:2])
 
     # Compare the two last points with the next point in the list. If they form a right
     # turn, remove the last point from the lower hull. If they form a left turn, add the
@@ -69,10 +69,10 @@ def andrews_monotone_chain(
             hull.pop()
         hull.append(c)
 
-    hull_array: NdArray = xp.array(hull)
+    hull_array: Array = xp.array(hull)
 
     # Create a boolean mask to filter points that are part of the convex hull.
-    mask: NdArray = xp.zeros((num_points,), dtype=bool)
+    mask: Array = xp.zeros((num_points,), dtype=bool)
     for point in points:
         if xp.any((hull_array == point).all(axis=1)):
             mask = update_array(mask, xp.nonzero((points == point).all(axis=1)), True)
@@ -156,13 +156,13 @@ def convex_hull(
 
     """
     points, mask = andrews_monotone_chain(f, interval, side, xp=xp, **kwargs)
-    points_on_hull: NdArray = points[mask]
+    points_on_hull: Array = points[mask]
 
-    def f_hull(x: float | NdArray) -> NdArray:
+    def f_hull(x: float | Array) -> Array:
         """Returns the y value of the convex hull at a given x value."""
         x = xp.asarray(x)
-        if xp.any(x < interval[0]) or xp.any(x > interval[1]):
-            raise ValueError(f"x must be in the interval {interval}, got {x}.")
+        # if xp.any(x < interval[0]) or xp.any(x > interval[1]):
+        #     raise ValueError(f"x must be in the interval {interval}, got {x}.")
 
         # Find indices of the sample points closest to x (left neighbor, guaranteed
         # not equal to x). Clip to ensure idxs is not negative (if x equal the left
@@ -186,11 +186,11 @@ def convex_hull(
 
     if f_prime is not None:
 
-        def f_prime_hull(x: float | NdArray) -> NdArray:
+        def f_prime_hull(x: float | Array) -> Array:
             """Returns the first derivative of the convex hull at a given x value."""
             x = xp.asarray(x)
-            if xp.any(x < interval[0]) or xp.any(x > interval[1]):
-                raise ValueError(f"x must be in the interval {interval}, got {x}.")
+            # if xp.any(x < interval[0]) or xp.any(x > interval[1]):
+            #     raise ValueError(f"x must be in the interval {interval}, got {x}.")
 
             # Find indices of the sample points closest to x (left neighbor, guaranteed
             # not equal to x). Clip to ensure idxs is not negative (if x equal the left
@@ -208,7 +208,7 @@ def convex_hull(
             idxs_hull = xp.searchsorted(points_on_hull[:, 0], x) - 1
             idxs_hull = xp.clip(idxs_hull, 0, len(points_on_hull) - 2)
 
-            linear_slope: NdArray = (
+            linear_slope: Array = (
                 points_on_hull[idxs_hull + 1, 1] - points_on_hull[idxs_hull, 1]
             ) / (points_on_hull[idxs_hull + 1, 0] - points_on_hull[idxs_hull, 0])
 
@@ -221,11 +221,11 @@ def convex_hull(
 
     if f_double_prime is not None:
 
-        def f_double_prime_hull(x: float | NdArray) -> NdArray:
+        def f_double_prime_hull(x: float | Array) -> Array:
             """Returns the second derivative of the convex hull at a given x value."""
             x = xp.asarray(x)
-            if xp.any(x < interval[0]) or xp.any(x > interval[1]):
-                raise ValueError(f"x must be in the interval {interval}, got {x}.")
+            # if xp.any(x < interval[0]) or xp.any(x > interval[1]):
+            #     raise ValueError(f"x must be in the interval {interval}, got {x}.")
 
             # Find indices of the sample points closest to x (left neighbor, guaranteed
             # not equal to x). Clip to ensure idxs is not negative (if x equal the left

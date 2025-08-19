@@ -1,21 +1,28 @@
-"""This module contains functions to compute and visualize the curvature of a homotopy
-between two functions, f and g, using their derivatives.
+"""Extends the functionality of :module:`hcplayground.src.polynomials.curvature` to
+allow interactive visualization of the curvature of a homotopy between two functions.
 
-Brown, D.A. and Zingg, D.W. (2016) ‘Efficient numerical differentiation of
-implicitly-defined curves for sparse systems’, Journal of Computational and Applied
-Mathematics, 304, pp. 138–159. Available at: https://doi.org/10.1016/j.cam.2016.03.002.
-
-TODO
+FIXME
 - Log scale toggle resets automatically when the f polynomial is changed, but this is
 not displayed in the UI.
 - Can the same error occur for the y-limits toggle?
 
 """
 
+import pathlib
+import sys
+
 import matplotlib.pyplot as plt
 import numpy as np
 from curvature import HomotopyCurvature
 from matplotlib.widgets import CheckButtons, Slider
+
+sys.path.append(str(pathlib.Path(__file__).parent.parent))
+
+from numeric_function_typing import (
+    NumericInput,
+    numeric_binary_func,
+    numeric_unary_func,
+)
 
 INTERESTING_POLYNOMIALS = [
     # (a4, a3, a2, a1, a0)
@@ -50,26 +57,33 @@ def interactive_homotopy_curvature_plot():
             # Initial guess for the root-finding algorithm.
             self.x0 = -3.0
 
+        @numeric_unary_func
         def f(self, x):
             return (
                 self.a4 * x**4 + self.a3 * x**3 + self.a2 * x**2 + self.a1 * x + self.a0
             )
 
+        @numeric_unary_func
         def f_prime(self, x):
             return 4 * self.a4 * x**3 + 3 * self.a3 * x**2 + 2 * self.a2 * x + self.a1
 
+        @numeric_unary_func
         def f_dprime(self, x):
             return 12 * self.a4 * x**2 + 6 * self.a3 * x + 2 * self.a2
 
+        @numeric_unary_func
         def g(self, x):
             return self.b2 * x**2 + self.b1 * x + self.b0
 
+        @numeric_unary_func
         def g_prime(self, x):
             return 2 * self.b2 * x + self.b1
 
+        @numeric_unary_func
         def g_dprime(self, x):
             return 2 * self.b2
 
+        @numeric_unary_func
         def disc(self, beta):
             # Calculate discriminant of the homotopy polynomial. Only valid for a4 = 0
             # and a3 = 0.
@@ -78,16 +92,19 @@ def interactive_homotopy_curvature_plot():
             c0 = beta * self.b0 + (1 - beta) * self.a0
             return c1**2 - 4 * c2 * c0
 
+        @numeric_binary_func
         def h_dprime(self, x, beta):
             return beta * self.g_dprime(x) + (1 - beta) * self.f_dprime(x)
 
-        def c_ddot(self, x, beta):
+        def c_ddot(
+            self, x: np.ndarray, beta: np.ndarray
+        ) -> tuple[np.ndarray, np.ndarray]:
             assert x.shape[-1] == 1, "Input x must have shape (..., 1)."
             assert beta.shape[-1] == 1, "Input beta must have shape (..., 1)."
             c_dot = np.concatenate(
                 [self.x_dot(x, beta), self.beta_dot(x, beta)], axis=-1
             )
-            hessian = self.hessian_h(x, beta)
+            hessian = self.create_hessian_h(x, beta)
             w_2 = hessian(c_dot, c_dot)
 
             z_2 = -w_2 / self.h_prime(x, beta)
@@ -99,11 +116,15 @@ def interactive_homotopy_curvature_plot():
 
             return x_ddot, beta_ddot
 
-        def homotopy_tangent_approx(self, xx, hh):
+        def homotopy_tangent_approx(
+            self, xx: np.ndarray, hh: NumericInput
+        ) -> np.ndarray:
             tangent = (xx[1:] - xx[:-1]) / hh
             return tangent
 
-        def update_coefficients(self, a4, a3, a2, a1, a0):
+        def update_coefficients(
+            self, a4: float, a3: float, a2: float, a1: float, a0: float
+        ):
             self.a4 = a4
             self.a3 = a3
             self.a2 = a2

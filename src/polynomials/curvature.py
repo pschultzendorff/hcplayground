@@ -8,13 +8,17 @@ Mathematics, 304, pp. 138–159. Available at: https://doi.org/10.1016/j.cam.201
 
 """
 
+import pathlib
+import sys
 from typing import Callable, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import root
 
-NumericInput = float | int | np.ndarray
+sys.path.append(str(pathlib.Path(__file__).parent.parent))
+
+from numeric_function_typing import NumericInput, NumericUnaryFunc, numeric_binary_func
 
 
 class HomotopyCurvature:
@@ -22,12 +26,12 @@ class HomotopyCurvature:
 
     def __init__(
         self,
-        f: Callable[[np.ndarray], np.ndarray],
-        g: Callable[[np.ndarray], np.ndarray],
-        f_prime: Callable[[np.ndarray], np.ndarray],
-        g_prime: Callable[[np.ndarray], np.ndarray],
-        f_double_prime: Callable[[np.ndarray], np.ndarray],
-        g_double_prime: Callable[[np.ndarray], np.ndarray],
+        f: NumericUnaryFunc,
+        g: NumericUnaryFunc,
+        f_prime: NumericUnaryFunc,
+        g_prime: NumericUnaryFunc,
+        f_double_prime: NumericUnaryFunc,
+        g_double_prime: NumericUnaryFunc,
         x0: float = 0.0,
     ):
         self.f = f
@@ -39,23 +43,26 @@ class HomotopyCurvature:
 
         self.x = x0
 
-    def h(self, x: np.ndarray, beta: NumericInput) -> np.ndarray:
+    @numeric_binary_func
+    def h(self, x, beta):
         return beta * self.g(x) + (1 - beta) * self.f(x)
 
-    def h_prime(self, x: np.ndarray, beta: NumericInput) -> np.ndarray:
+    @numeric_binary_func
+    def h_prime(self, x, beta):
         return beta * self.g_prime(x) + (1 - beta) * self.f_prime(x)
 
-    def h_double_prime(self, x: np.ndarray, beta: NumericInput) -> np.ndarray:
+    @numeric_binary_func
+    def h_double_prime(self, x, beta):
         return beta * self.g_double_prime(x) + (1 - beta) * self.f_double_prime(x)
 
-    def hessian_h(
-        self, x: np.ndarray, beta: NumericInput
+    def create_hessian_h(
+        self, x: NumericInput, beta: NumericInput
     ) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
         def hessian(v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
             assert v1.shape[-1] == 2, "Input vector v1 must have shape (..., 2)."
             assert v2.shape[-1] == 2, "Input vector v2 must have shape (..., 2)."
-            h_xx = self.h_double_prime(x, beta)
-            h_xbeta = self.g_prime(x) - self.f_prime(x)
+            h_xx = np.asarray(self.h_double_prime(x, beta))
+            h_xbeta = np.asarray(self.g_prime(x) - self.f_prime(x))
             h_betabeta = np.zeros_like(h_xx)
             hessian_mat = np.stack(
                 [
@@ -73,13 +80,16 @@ class HomotopyCurvature:
 
         return hessian
 
-    def z(self, x: np.ndarray, beta: NumericInput) -> np.ndarray:
+    @numeric_binary_func
+    def z(self, x, beta):
         return (self.g(x) - self.f(x)) / self.h_prime(x, beta)
 
-    def beta_dot(self, x: np.ndarray, beta: NumericInput) -> np.ndarray:
+    @numeric_binary_func
+    def beta_dot(self, x, beta):
         return -1 / (self.z(x, beta) ** 2 + 1) ** 0.5
 
-    def x_dot(self, x: np.ndarray, beta: NumericInput) -> np.ndarray:
+    @numeric_binary_func
+    def x_dot(self, x, beta):
         return -1 * self.beta_dot(x, beta) * self.z(x, beta)
 
     def x_dot_dot(self, xs: np.ndarray, betas: np.ndarray):
@@ -89,7 +99,7 @@ class HomotopyCurvature:
         c_dot = np.concatenate(
             [self.x_dot(xs, betas), self.beta_dot(xs, betas)], axis=-1
         )  # ``shape=(n, 2)``
-        hessian = self.hessian_h(xs, betas)
+        hessian = self.create_hessian_h(xs, betas)
         w_2 = hessian(c_dot, c_dot)
         assert w_2.shape[-1] == 1, "w_2 must have shape (..., 1)."
 
@@ -102,15 +112,15 @@ class HomotopyCurvature:
 
         # Sanity check: ensure that beta_dot_dot is close to its finite difference
         # approximation.
-        # ss = self.map_to_arclength(x: NumericInput, beta: float)[..., None]
-        # hh = ss[1:] - ss[:-1]
-        # beta_dot_approx = (beta[1:] - beta[:-1]) / hh
-        # beta_dot_dot_approx = (beta_dot_approx[1:] - beta_dot_approx[:-1]) * (
-        #     2 / (hh[1:] + hh[:-1])
-        # )
-        # assert np.isclose(beta_dot_dot[1:-1], beta_dot_dot_approx: NumericInput, rtol=0.1).all(), (
-        #     "beta_dot_dot does not match finite difference approximation."
-        # )
+        ss = self.map_to_arclength(xs, betas)[..., None]
+        hh = ss[1:] - ss[:-1]
+        beta_dot_approx = (betas[1:] - betas[:-1]) / hh
+        beta_dot_dot_approx = (beta_dot_approx[1:] - beta_dot_approx[:-1]) * (
+            2 / (hh[1:] + hh[:-1])
+        )
+        assert np.isclose(beta_dot_dot[1:-1], beta_dot_dot_approx, rtol=0.1).all(), (
+            "beta_dot_dot does not match finite difference approximation."
+        )
 
         # Finally, calculate :math:`\ddot{x} = z_2 - \ddot{beta} z`.
         return z_2 - beta_dot_dot * z_value
@@ -130,17 +140,21 @@ class HomotopyCurvature:
     def map_to_arclength(self, x: np.ndarray, betas: np.ndarray) -> np.ndarray:
         hh = np.abs(self.beta_dot(x, betas))
         # Loop through betas and beta primes and use the IFT and finite differences to
-        # approximate the arclength. Note that beta decreases, i.e., beta_i > beta_{i+1}.
+        # approximate the arclength. Note that beta decreases, i.e.,
+        # beta_i > beta_{i+1}.
         dss = (betas[:-1] - betas[1:]) / hh[:-1]
         # Compute cumulative sum to get the arclength and insert 0 at the start.
         return np.insert(np.cumsum(dss), 0, 0)[..., None]
 
     def solve_h_for_beta(self, beta: NumericInput, x0: float = 0.0) -> NumericInput:
+        # NOTE: This would be cleaner with some TypeVar, but I could not get it to work
+        # without creating problems elsewhere.
         if np.isscalar(beta):
-            # For scalar, solve only for the given beta.
+            # For scalars, solve only for the given beta.
+            beta = cast(float, beta)
 
             def h_for_fixed_beta(x: float) -> float:
-                return self.h(x, beta)  # type: ignore
+                return self.h(x, beta)
 
             sol = root(h_for_fixed_beta, x0)
             return sol.x[0]
@@ -154,9 +168,9 @@ class HomotopyCurvature:
 
     def plot_curvature(self) -> None:
         betas = np.linspace(0, 1, 100)[::-1][..., None]
-        xs: np.ndarray = self.solve_h_for_beta(betas, x0=-3.0)  # type: ignore
-        ss: np.ndarray = self.map_to_arclength(xs, betas)  # type: ignore
-        tangent: np.ndarray = self.x_dot(xs, betas)  # type: ignore
+        xs = cast(np.ndarray, self.solve_h_for_beta(betas, x0=-3.0))
+        ss = self.map_to_arclength(xs, betas)
+        tangent = self.x_dot(xs, betas)
         plt.figure(figsize=(10, 6))
         plt.quiver(
             ss[:-10:10],
