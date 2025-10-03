@@ -63,7 +63,7 @@ class TPFModel:
         # Harmonic average of half-transmissibilities gives the cell faces
         # transmissibilities.
         half_transmissibilities = (
-            self.domain_size / (self.num_cells * 2) * self.permeabilities
+            (self.num_cells * 2) / self.domain_size * self.permeabilities
         )
         assert (half_transmissibilities > 0).all(), "Permeabilities must be positive."
         half_transmissibilities_inverse = jnp.pow(half_transmissibilities, -1)

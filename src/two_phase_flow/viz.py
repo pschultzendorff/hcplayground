@@ -9,9 +9,10 @@ from jax.typing import ArrayLike as ArrayLike_jax
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.widgets import Slider
-from model import TPFModel
 from numpy.typing import ArrayLike as ArrayLike_np
 from solvers import solve
+
+from hcplayground.src.two_phase_flow.model_tpf import TPFModel
 
 ArrayLike: TypeAlias = ArrayLike_jax | ArrayLike_np
 

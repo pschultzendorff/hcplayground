@@ -25,7 +25,8 @@ import jax.numpy as jnp
 import seaborn as sns
 from jax.typing import ArrayLike as ArrayLike_jax
 from matplotlib import pyplot as plt
-from model import TPFModel
+
+from hcplayground.src.two_phase_flow.model_tpf import TPFModel
 
 parent_dir = pathlib.Path(__file__).parent.parent
 sys.path.append(str(parent_dir))

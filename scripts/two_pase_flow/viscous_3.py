@@ -18,7 +18,7 @@ from hc import (
 )
 from viz import solve_and_plot
 
-results_dir = pathlib.Path(__file__).parent / "viscous_2"
+results_dir = pathlib.Path(__file__).parent / "viscous_3"
 results_dir.mkdir(exist_ok=True)
 
 NUM_CELLS: int = 30
@@ -26,8 +26,8 @@ NUM_CELLS: int = 30
 model_params: dict[str, Any] = {
     "num_cells": NUM_CELLS,
     "domain_size": 1.0,
-    "permeabilities": jnp.full((NUM_CELLS,), 1.0),
-    "porosities": jnp.full((NUM_CELLS,), 0.5),
+    "permeabilities": jnp.full((NUM_CELLS,), 1e-6),
+    "porosities": jnp.full((NUM_CELLS,), 0.1),
     "source_terms": jnp.full((NUM_CELLS, 2), 0.0),
     "bc": ["neumann", "dirichlet"],
     "dirichlet_bc": jnp.array(
@@ -52,42 +52,30 @@ def compare_solvers(model_params: dict[str, Any], run_case: str) -> None:
     match run_case:
         case "case1_s02_s98_u0_mu5_mu1":
             hull_side = "lower"
-            saturation_interval = (0.02, 0.98)
         case "case2_s98_s02_u1_mu5_mu1":
             hull_side = "upper"
-            saturation_interval = (0.02, 0.98)
         case "case3_s02_s02_u1_mu5_mu1":
             hull_side = "upper"
-            saturation_interval = (0.02, 1.0)
         case "case4_s02_s98_u0_mu1_mu5":
             hull_side = "lower"
-            saturation_interval = (0.02, 0.98)
         case "case5_s98_s02_u1_mu1_mu5":
             hull_side = "upper"
-            saturation_interval = (0.02, 0.98)
         case "case6_s02_s02_u1_mu1_mu5":
             hull_side = "upper"
-            saturation_interval = (0.02, 1)
         case "case7_s98_s98_u0_mu1_mu5":
             hull_side = "lower"
-            saturation_interval = (0.0, 0.98)
         case "case8_s98_s98_u0_mu5_mu1":
             hull_side = "lower"
-            saturation_interval = (0.0, 0.98)
         case "case9_s05_s05_u1_mu1_mu1":
             hull_side = "upper"
-            saturation_interval = (0.5, 1.0)
         case "case10_s05_s05_u0_mu1_mu1":
             hull_side = "lower"
-            saturation_interval = (0.0, 0.5)
+
+    # if not run_case.startswith("case10"):
+    #     return None
 
     model_fluxhc1 = FluxHC1(**model_params)
     model_fluxhc2 = ConvexHullFluxHC(**model_params, convex_hull_side=hull_side)
-    model_fluxhc3 = ConvexHullFluxHC(
-        **model_params,
-        convex_hull_side=hull_side,
-        convex_hull_saturation_interval=saturation_interval,
-    )
     model_diffhc1 = DiffusionHC(**model_params, fixed_diffusion_coeff=1e-5)
     model_diffhc2 = DiffusionHC(**model_params, fixed_diffusion_coeff=1e-3)
     model_diffhc3 = DiffusionHC(**model_params, fixed_diffusion_coeff=1)
@@ -95,22 +83,18 @@ def compare_solvers(model_params: dict[str, Any], run_case: str) -> None:
     convex_hull_fig = model_fluxhc2.plot_convex_hull()
     convex_hull_fig.savefig(case_dir / "convex_hull_fw_HC2.png", bbox_inches="tight")
 
-    convex_hull_fig = model_fluxhc3.plot_convex_hull()
-    convex_hull_fig.savefig(case_dir / "convex_hull_fw_HC3.png", bbox_inches="tight")
-
-    for final_time in [1.0, 3.00, 10.0, 50.0]:
+    for final_time in [5.0, 50.0]:
         curvature_fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
         for i, (model, color) in enumerate(
             zip(
                 [
                     model_fluxhc1,
                     model_fluxhc2,
-                    model_fluxhc3,
                     model_diffhc1,
                     model_diffhc2,
                     model_diffhc3,
                 ],
-                sns.color_palette("rocket", 6),
+                sns.color_palette("rocket", 5),
             ),
             start=1,
         ):
@@ -157,7 +141,7 @@ model_params.update(
             ],
             axis=1,
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 0.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.0], [0.0, 0.0]]),
         "mu_w": 5.0,
         "mu_n": 1.0,
     }
@@ -179,7 +163,7 @@ model_params.update(
             ],
             axis=1,
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 1.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.01], [0.0, 0.0]]),
     }
 )
 compare_solvers(model_params, "case2_s98_s02_u1_mu5_mu1")
@@ -190,7 +174,7 @@ model_params.update(
         "initial_conditions": jnp.stack(
             [jnp.zeros((NUM_CELLS,)), jnp.full((NUM_CELLS,), 0.02)], axis=1
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 1.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.01], [0.0, 0.0]]),
     }
 )
 compare_solvers(model_params, "case3_s02_s02_u1_mu5_mu1")
@@ -210,7 +194,7 @@ model_params.update(
             ],
             axis=1,
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 0.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.0], [0.0, 0.0]]),
         "mu_w": 1.0,
         "mu_n": 5.0,
     }
@@ -233,7 +217,7 @@ model_params.update(
             ],
             axis=1,
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 1.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.01], [0.0, 0.0]]),
     }
 )
 compare_solvers(model_params, "case5_s98_s02_u1_mu1_mu5")
@@ -244,7 +228,7 @@ model_params.update(
         "initial_conditions": jnp.stack(
             [jnp.zeros((NUM_CELLS,)), jnp.full((NUM_CELLS,), 0.02)], axis=1
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 1.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.01], [0.0, 0.0]]),
     }
 )
 compare_solvers(model_params, "case6_s02_s02_u1_mu1_mu5")
@@ -256,7 +240,7 @@ model_params.update(
         "initial_conditions": jnp.stack(
             [jnp.zeros((NUM_CELLS,)), jnp.full((NUM_CELLS,), 0.98)], axis=1
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 0.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.0], [0.0, 0.0]]),
     }
 )
 compare_solvers(model_params, "case7_s98_s98_u0_mu1_mu5")
@@ -267,7 +251,7 @@ model_params.update(
         "initial_conditions": jnp.stack(
             [jnp.zeros((NUM_CELLS,)), jnp.full((NUM_CELLS,), 0.98)], axis=1
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 0.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.0], [0.0, 0.0]]),
         "mu_w": 5.0,
         "mu_n": 1.0,
     }
@@ -280,7 +264,7 @@ model_params.update(
         "initial_conditions": jnp.stack(
             [jnp.zeros((NUM_CELLS,)), jnp.full((NUM_CELLS,), 0.5)], axis=1
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 1.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.01], [0.0, 0.0]]),
         "mu_w": 1.0,
         "mu_n": 1.0,
     }
@@ -293,7 +277,7 @@ model_params.update(
         "initial_conditions": jnp.stack(
             [jnp.zeros((NUM_CELLS,)), jnp.full((NUM_CELLS,), 0.5)], axis=1
         ).flatten(),
-        "neumann_bc": jnp.array([[1.0, 0.0], [0.0, 0.0]]),
+        "neumann_bc": jnp.array([[0.01, 0.0], [0.0, 0.0]]),
         "mu_w": 1.0,
         "mu_n": 1.0,
     }

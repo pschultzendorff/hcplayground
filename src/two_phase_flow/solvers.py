@@ -5,8 +5,9 @@ import logging
 import jax.numpy as jnp
 import tqdm
 from hc import DiffusionHC, HCModel
-from model import TPFModel
 from tqdm.contrib.logging import logging_redirect_tqdm
+
+from hcplayground.src.two_phase_flow.model_tpf import TPFModel
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
